@@ -78,11 +78,12 @@ class CodeLocator:
     """Resolve objects to their handling code using the policy and inode index."""
 
     def __init__(self, policy: Policy, index: InodeIndex, contexts: ContextDB,
-                 dsmap=None, vintf=None):
+                 dsmap=None, vintf=None, appdomains=None):
         self._policy = policy
         self._index = index
         self._contexts = contexts
         self._vintf = vintf
+        self._appdomains = appdomains
         self._idx = _build_domain_binaries(policy, index)
         # Interface-name -> hosting domain(s), from init `.rc` `interface` lines. This
         # resolves hwservice hosts that the policy `add` rule misses (HIDL services
@@ -139,9 +140,23 @@ class CodeLocator:
             refs.append(CodeRef(b, _tool_for_path(b),
                                 f"binary transitions into domain {domain}"))
         if not refs and domain in self._policy.expand("appdomain"):
-            refs.append(CodeRef("(an installed APK)", "jadx",
-                                f"{domain} is an app domain; its code is the APK "
-                                f"(resolve via the app-domain stage)"))
+            # An app domain is zygote-forked, not exec'd, so its code is an APK. If the
+            # APK ships on the image (a preinstalled/system app), name it; a plain
+            # user-installed app (untrusted_app/isolated_app) has no file on a firmware
+            # image, so we say so rather than invent one.
+            apks = (self._appdomains.apks_for_domain(domain)
+                    if self._appdomains is not None else [])
+            if apks:
+                for p in apks[:8]:
+                    info = self._appdomains.apps.get(p)
+                    pkg = f" ({info.package})" if info and info.package else ""
+                    refs.append(CodeRef(p, "jadx",
+                                        f"preinstalled app{pkg} runs in domain {domain} "
+                                        "(seapp_contexts match)"))
+            else:
+                refs.append(CodeRef("(a user-installed APK)", "jadx",
+                                    f"{domain} is an app domain with no APK on this "
+                                    "image; its code is whatever the user installs"))
         return refs
 
     def locate_finding(self, finding: Finding) -> list[CodeRef]:

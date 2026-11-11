@@ -47,7 +47,7 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
     report = run_reach(model, policy, source, follow_transitions=True)
     dsmap = DomainServiceMap(model.initrc, policy, model.contexts)
     locator = CodeLocator(policy, model.inodes, model.contexts, dsmap=dsmap,
-                          vintf=model.vintf)
+                          vintf=model.vintf, appdomains=model.appdomains)
     findings = report.findings
 
     scratch = os.path.join(work, "attrib")

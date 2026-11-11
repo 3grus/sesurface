@@ -26,6 +26,7 @@ from .model.contexts import ContextDB
 from .model.contextload import load_contexts
 from .model.extract import ImageFiles
 from .model.initrc import DomainServiceMap, InitRcDb, parse_init_rc
+from .model.appdomain import AppDomainIndex, build_app_domain_index
 from .model.inode import InodeIndex, build_inode_index
 from .model.partitions import PartitionSet, build_partition_set
 from .model.ueventd import UeventdDb, parse_ueventd
@@ -36,7 +37,7 @@ from .policy.policy import Policy
 from .subject import resolve_subject
 from .types import Finding, Subject
 
-_CACHE_VERSION = 5   # Bump when the cached structures change shape.
+_CACHE_VERSION = 6   # Bump when the cached structures change shape.
 
 
 @dataclass
@@ -55,6 +56,7 @@ class ImageModel:
     ueventd: UeventdDb
     aids: AidDb
     vintf: VintfDb
+    appdomains: "AppDomainIndex"
 
     def open_policy(self) -> Policy:
         """Load the assembled policy with setools (cheap; not cached)."""
@@ -124,13 +126,16 @@ def build_image_model(image_dir: str, work_dir: str,
         initrc = parse_init_rc(files, inodes)
         ueventd = parse_ueventd(files)
         vintf = parse_vintf(files, inodes)
+        # Map each preinstalled APK to its app domain (seapp_contexts), so the locator
+        # can name the concrete APK behind an app-domain target (blast-radius pivots).
+        appdomains = build_app_domain_index(files, inodes, contexts)
     finally:
         files.close()
 
     model = ImageModel(image_dir=image_dir, work_dir=work_dir, fingerprint=fp,
                        partitions=parts, inodes=inodes, contexts=contexts,
                        assembled=assembled, initrc=initrc, ueventd=ueventd,
-                       aids=aids, vintf=vintf)
+                       aids=aids, vintf=vintf, appdomains=appdomains)
     if use_cache:
         with open(cache_path, "wb") as f:
             pickle.dump(model, f)
@@ -154,7 +159,7 @@ def run_reach(model: ImageModel, policy: Policy, domain: str,
     # Stage G: attach handling-code pointers to each finding (for the deferred
     # ghidra/jadx pass). Stage F: compute pivot edges from the findings.
     locator = CodeLocator(policy, model.inodes, model.contexts, dsmap=dsmap,
-                          vintf=model.vintf)
+                          vintf=model.vintf, appdomains=model.appdomains)
     attach_code(locator, findings)
     pivots = compute_pivots(policy, subject, findings, te.pivots)
 

@@ -174,7 +174,7 @@ def _cmd_attribute(args: argparse.Namespace) -> int:
                        follow_transitions=not args.no_transitions)
     dsmap = DomainServiceMap(model.initrc, policy, model.contexts)
     locator = CodeLocator(policy, model.inodes, model.contexts, dsmap=dsmap,
-                          vintf=model.vintf)
+                          vintf=model.vintf, appdomains=model.appdomains)
 
     findings = report.findings
     if args.target:
