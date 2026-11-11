@@ -1,0 +1,594 @@
+<title>Reachable Surface Explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+  /* Layout: a sticky summary header over a tabbed, filterable explorer.
+     Semantic color encodes gate state (exposed / protected / review / idle);
+     a single indigo accent carries interaction. Identifiers are set in mono. */
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --panel-2: #f1f3f7;
+    --fg: #1a1d24; --muted: #5c6472; --faint: #8b93a3;
+    --line: #e2e6ec; --line-strong: #cfd5de;
+    --accent: #4f46e5; --accent-soft: #ecebfc;
+    --exposed: #d4351c; --exposed-soft: #fbe6e2;
+    --protected: #1f8a4c; --protected-soft: #e2f3e9;
+    --review: #b5730a; --review-soft: #f9eed8;
+    --idle: #8b93a3; --idle-soft: #eceff3;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: "Inter", system-ui, sans-serif;
+    --head: "Space Grotesk", var(--sans);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1116; --panel: #161b22; --panel-2: #1b222c;
+      --fg: #e6eaf0; --muted: #9aa4b2; --faint: #6b7483;
+      --line: #262d38; --line-strong: #39414f;
+      --accent: #8b85ff; --accent-soft: #241f45;
+      --exposed: #ff6b52; --exposed-soft: #3a1b16;
+      --protected: #4fd184; --protected-soft: #123524;
+      --review: #e0a540; --review-soft: #3a2c12;
+      --idle: #6b7483; --idle-soft: #222934;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1116; --panel: #161b22; --panel-2: #1b222c;
+    --fg: #e6eaf0; --muted: #9aa4b2; --faint: #6b7483;
+    --line: #262d38; --line-strong: #39414f;
+    --accent: #8b85ff; --accent-soft: #241f45;
+    --exposed: #ff6b52; --exposed-soft: #3a1b16;
+    --protected: #4fd184; --protected-soft: #123524;
+    --review: #e0a540; --review-soft: #3a2c12;
+    --idle: #6b7483; --idle-soft: #222934;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans);
+    margin: 0; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+  .wrap { padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    max-width: 1120px; margin: 0 auto; }
+  h1, h2, h3 { font-family: var(--head); margin: 0; text-wrap: balance; }
+  .mono { font-family: var(--mono); }
+  code, .mono { font-variant-ligatures: none; }
+  a { color: var(--accent); }
+
+  /* ---- header ---- */
+  header { padding-block: 22px 14px; border-bottom: 1px solid var(--line); }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--faint); }
+  .title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    margin-top: 4px; }
+  h1 { font-size: clamp(22px, 4.4vw, 30px); font-weight: 700; }
+  h1 .dom { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13.5px; margin-top: 6px; max-width: 70ch; }
+  .meta { color: var(--faint); font-size: 12px; font-family: var(--mono); }
+
+  /* ---- summary band ---- */
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    margin-top: 16px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; min-width: 0; }
+  .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .06em; font-weight: 600; }
+  .tile .v { font-family: var(--head); font-size: 26px; font-weight: 600;
+    font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .note { font-size: 11.5px; color: var(--faint); margin-top: 1px; }
+
+  .meter-card { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; margin-top: 10px; }
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline;
+    flex-wrap: wrap; gap: 8px; }
+  .meter-head h2 { font-size: 14px; font-weight: 600; }
+  .meter-head .hint { font-size: 12px; color: var(--muted); }
+  .bar { display: flex; height: 16px; border-radius: 5px; overflow: hidden;
+    margin-top: 10px; background: var(--panel-2); }
+  .bar > span { display: block; height: 100%; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+  .legend button { all: unset; cursor: pointer; display: flex; align-items: center;
+    gap: 6px; font-size: 12.5px; color: var(--muted); border-radius: 6px;
+    padding: 2px 4px; }
+  .legend button:hover { color: var(--fg); }
+  .legend button[aria-pressed="true"] { color: var(--fg);
+    box-shadow: inset 0 -2px 0 var(--accent); }
+  .legend .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .legend b { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 600; }
+
+  .sw-exposed { background: var(--exposed); } .sw-protected { background: var(--protected); }
+  .sw-review { background: var(--review); } .sw-idle { background: var(--idle); }
+
+  /* ---- tabs ---- */
+  nav.tabs { display: flex; gap: 2px; margin-top: 18px; border-bottom: 1px solid var(--line);
+    position: sticky; top: env(safe-area-inset-top, 0px); background: var(--bg); z-index: 5;
+    padding-top: 4px; }
+  nav.tabs button { all: unset; cursor: pointer; padding: 9px 14px; font-size: 13.5px;
+    font-weight: 600; color: var(--muted); border-radius: 8px 8px 0 0; white-space: nowrap; }
+  nav.tabs button[aria-selected="true"] { color: var(--fg); background: var(--panel);
+    box-shadow: inset 0 -2px 0 var(--accent); }
+  nav.tabs .count { font-family: var(--mono); font-size: 11px; color: var(--faint);
+    margin-left: 5px; }
+
+  /* ---- toolbar ---- */
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin: 14px 0; }
+  .search { flex: 1 1 220px; min-width: 0; display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px;
+    padding: 7px 11px; }
+  .search input { all: unset; flex: 1; min-width: 0; font-size: 13.5px; color: var(--fg);
+    font-family: var(--mono); }
+  .search svg { flex: none; color: var(--faint); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { all: unset; cursor: pointer; font-size: 12.5px; font-weight: 600;
+    padding: 6px 11px; border-radius: 20px; border: 1px solid var(--line-strong);
+    color: var(--muted); background: var(--panel); white-space: nowrap; }
+  .chip[aria-pressed="true"] { color: #fff; }
+  .chip.f-all[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
+  .chip.f-ungated[aria-pressed="true"] { background: var(--exposed); border-color: var(--exposed); }
+  .chip.f-gated[aria-pressed="true"] { background: var(--protected); border-color: var(--protected); }
+  .chip.f-review[aria-pressed="true"] { background: var(--review); border-color: var(--review); }
+  .chip.f-idle[aria-pressed="true"] { background: var(--idle); border-color: var(--idle); }
+  select.sort { font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 9px; }
+
+  .resultline { font-size: 12.5px; color: var(--muted); margin: 2px 0 12px;
+    font-variant-numeric: tabular-nums; }
+  .resultline b { color: var(--fg); }
+
+  /* ---- service rows ---- */
+  .svc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    margin-bottom: 8px; overflow: hidden; }
+  .svc.exposed-lead { border-left: 3px solid var(--exposed); }
+  .svc-head { display: grid; grid-template-columns: 1fr auto; gap: 10px 16px;
+    align-items: center; padding: 12px 14px; cursor: pointer; }
+  .svc-id { min-width: 0; }
+  .svc-name { font-family: var(--mono); font-size: 14.5px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px; }
+  .svc-name .caret { color: var(--faint); transition: transform .15s; flex: none; }
+  .svc.open .svc-name .caret { transform: rotate(90deg); }
+  .svc-iface { font-family: var(--mono); font-size: 11.5px; color: var(--faint);
+    margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc-metrics { display: flex; align-items: center; gap: 14px; }
+  .mini { width: 160px; max-width: 34vw; }
+  .mini .bar { height: 9px; margin: 0; border-radius: 3px; }
+  .mini .nums { display: flex; gap: 8px; margin-top: 5px; font-size: 11px;
+    font-variant-numeric: tabular-nums; }
+  .mini .nums span { color: var(--muted); }
+  .mini .nums b { font-weight: 700; }
+  .expct { font-family: var(--head); font-size: 20px; font-weight: 600;
+    color: var(--exposed); font-variant-numeric: tabular-nums; text-align: right;
+    min-width: 52px; }
+  .expct small { display: block; font-family: var(--sans); font-size: 10px;
+    font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .expct.zero { color: var(--protected); }
+
+  /* ---- transactions ---- */
+  .txns { border-top: 1px solid var(--line); background: var(--panel-2); padding: 4px 0; }
+  .txn { display: grid; grid-template-columns: 54px 1fr auto; gap: 10px;
+    align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  .txn:last-child { border-bottom: none; }
+  .txn .code { font-family: var(--mono); font-size: 11.5px; color: var(--faint);
+    font-variant-numeric: tabular-nums; }
+  .txn .m { min-width: 0; }
+  .txn .m .mn { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  .txn .m .perm { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-top: 1px; }
+  .txn .m .via { font-size: 10.5px; color: var(--faint); margin-top: 1px; }
+  .txn .st { justify-self: end; }
+  .status { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px;
+    white-space: nowrap; letter-spacing: .01em; }
+  .st-ungated { color: var(--exposed); background: var(--exposed-soft); }
+  .st-gated { color: var(--protected); background: var(--protected-soft); }
+  .st-needsreview { color: var(--review); background: var(--review-soft); }
+  .st-notattempted { color: var(--idle); background: var(--idle-soft); }
+  .more { padding: 9px 14px; font-size: 12px; color: var(--muted); }
+
+  .svc-note { padding: 8px 14px; font-size: 11.5px; color: var(--review);
+    background: var(--review-soft); border-top: 1px solid var(--line); }
+
+  /* ---- native rows ---- */
+  .ngroup { margin-bottom: 18px; }
+  .ngroup h3 { font-size: 13px; font-weight: 600; display: flex; align-items: center;
+    gap: 8px; margin-bottom: 8px; }
+  .ngroup h3 .status { font-size: 11px; }
+  .nrow { background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+    padding: 11px 13px; margin-bottom: 7px; }
+  .nrow .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+    flex-wrap: wrap; }
+  .nrow .tgt { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
+  .nrow .conf { font-size: 11px; color: var(--faint); font-family: var(--mono); }
+  .nrow .hand { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    margin-top: 4px; overflow-wrap: anywhere; }
+  .nrow .art { font-family: var(--mono); font-size: 11px; color: var(--faint);
+    margin-top: 1px; overflow-wrap: anywhere; }
+  .nrow .nnote { font-size: 11.5px; color: var(--muted); margin-top: 5px; max-width: 95ch; }
+  .nrow .tags { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+  .tag { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 6px; }
+
+  /* ---- surface ---- */
+  table.surf { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.surf th { text-align: left; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); font-weight: 600; padding: 7px 10px;
+    border-bottom: 1px solid var(--line-strong); }
+  table.surf td { padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-variant-numeric: tabular-nums; }
+  table.surf td.cls { font-family: var(--mono); font-weight: 600; }
+  table.surf td.n { font-weight: 700; }
+  .codbar { display: flex; height: 8px; width: 150px; max-width: 40vw; border-radius: 3px;
+    overflow: hidden; background: var(--panel-2); }
+  .codbar span { height: 100%; }
+  .cod-allow { background: var(--exposed); } .cod-unknown { background: var(--review); }
+  .cod-na { background: var(--idle); } .cod-deny { background: var(--protected); }
+  .cod-key { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px;
+    color: var(--muted); margin: 4px 0 14px; }
+  .cod-key span { display: flex; align-items: center; gap: 5px; }
+  .cod-key i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  .section-intro { font-size: 13px; color: var(--muted); margin: 4px 0 14px;
+    max-width: 78ch; }
+  .foot { color: var(--faint); font-size: 11.5px; font-family: var(--mono);
+    border-top: 1px solid var(--line); margin-top: 26px; padding-block: 16px 30px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 30px 0; text-align: center; }
+  @media (max-width: 680px) {
+    .summary { grid-template-columns: repeat(2, 1fr); }
+    .svc-head { grid-template-columns: 1fr; }
+    .svc-metrics { justify-content: space-between; }
+    .mini { width: 100%; max-width: none; flex: 1; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">sesurface · code-attribution</div>
+    <div class="title-row">
+      <h1>Reachable from <span class="dom mono" id="h-dom">—</span></h1>
+    </div>
+    <p class="sub">Every object an SELinux subject can reach, and for each binder
+      service the per-transaction verdict: is a caller check enforced in code, or is
+      the transaction directly reachable? <b>Exposed</b> transactions are the audit
+      worklist.</p>
+    <div class="meta" id="h-meta">—</div>
+
+    <div class="summary" id="tiles"></div>
+    <div class="meter-card">
+      <div class="meter-head">
+        <h2>Framework transaction gates</h2>
+        <span class="hint">click a band to filter the services below</span>
+      </div>
+      <div class="bar" id="gatebar"></div>
+      <div class="legend" id="gatelegend"></div>
+    </div>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="framework" aria-selected="true">Framework services
+        <span class="count" id="tc-fw"></span></button>
+      <button data-tab="native" aria-selected="false">Native &amp; kernel
+        <span class="count" id="tc-nat"></span></button>
+      <button data-tab="surface" aria-selected="false">Reachable surface
+        <span class="count" id="tc-surf"></span></button>
+    </nav>
+  </header>
+
+  <!-- FRAMEWORK -->
+  <section id="tab-framework">
+    <div class="toolbar">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="q" type="text" placeholder="filter service or method…"
+          autocomplete="off" spellcheck="false">
+      </label>
+      <div class="chips" id="chips">
+        <button class="chip f-all" data-f="all" aria-pressed="true">All</button>
+        <button class="chip f-ungated" data-f="ungated" aria-pressed="false">Exposed</button>
+        <button class="chip f-review" data-f="needs-review" aria-pressed="false">Review</button>
+        <button class="chip f-gated" data-f="gated" aria-pressed="false">Gated</button>
+        <button class="chip f-idle" data-f="not-attempted" aria-pressed="false">Not&nbsp;attempted</button>
+      </div>
+      <select class="sort" id="sort">
+        <option value="exposed">Sort: most exposed</option>
+        <option value="txns">Sort: most transactions</option>
+        <option value="name">Sort: name</option>
+      </select>
+    </div>
+    <div class="resultline" id="fw-result"></div>
+    <div id="svclist"></div>
+  </section>
+
+  <!-- NATIVE -->
+  <section id="tab-native" hidden>
+    <p class="section-intro">Non-framework targets — native binder/socket servers,
+      HIDL HALs and device-ioctl surface — resolved by the ELF-symbol scan and ioctl
+      decode. Grouped by verdict.</p>
+    <div id="natlist"></div>
+  </section>
+
+  <!-- SURFACE -->
+  <section id="tab-surface" hidden>
+    <p class="section-intro">The full reachable object surface by SELinux class, with
+      the in-code (COD) gate decision tallied per class. Most classes are decided by
+      policy + DAC; only binder/socket/service carry an in-code question.</p>
+    <div class="cod-key">
+      <span><i class="cod-allow"></i>allow (reachable)</span>
+      <span><i class="cod-unknown"></i>unknown / explained</span>
+      <span><i class="cod-deny"></i>deny</span>
+      <span><i class="cod-na"></i>n/a</span>
+    </div>
+    <div style="overflow-x:auto"><table class="surf" id="surftab"></table></div>
+  </section>
+
+  <div class="foot" id="foot">—</div>
+</div>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(function () {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("data").textContent);
+  const $ = (s, r) => (r || document).querySelector(s);
+  const el = (t, c, txt) => { const e = document.createElement(t); if (c) e.className = c;
+    if (txt != null) e.textContent = txt; return e; };
+  const fmt = n => n.toLocaleString("en-US");
+  const STK = [
+    ["ungated", "exposed", "Exposed", "--exposed"],
+    ["gated", "protected", "Gated", "--protected"],
+    ["needs-review", "review", "Review", "--review"],
+    ["not-attempted", "idle", "Not attempted", "--idle"],
+  ];
+  const stClass = s => "st-" + s.replace(/-/g, "");
+
+  // ---- header ----
+  $("#h-dom").textContent = DATA.source;
+  $("#h-meta").textContent = `${DATA.image}  ·  generated ${DATA.generated}  ·  `
+    + `${fmt(DATA.totals.reached_domains)} reachable domains via exec-transition`;
+  const fw = DATA.framework, T = fw.totals;
+  const txnTotal = STK.reduce((a, [k]) => a + (T[k] || 0), 0);
+
+  const tiles = [
+    ["Reachable objects", fmt(DATA.totals.findings), "across " + DATA.classes.length + " classes"],
+    ["Framework services", fmt(fw.n_services), "hosted in system_server"],
+    ["Transactions read", fmt(txnTotal), "per-method verdicts"],
+    ["Exposed", fmt(T.ungated), "directly reachable", "exposed"],
+  ];
+  const tilesEl = $("#tiles");
+  tiles.forEach(([k, v, note, tone]) => {
+    const t = el("div", "tile");
+    t.append(el("div", "k", k));
+    const vv = el("div", "v", v); if (tone === "exposed") vv.style.color = "var(--exposed)";
+    t.append(vv, el("div", "note", note));
+    tilesEl.append(t);
+  });
+
+  // ---- gate meter ----
+  const bar = $("#gatebar"), leg = $("#gatelegend");
+  STK.forEach(([k, sw, label, varn]) => {
+    const n = T[k] || 0, pct = txnTotal ? (n / txnTotal * 100) : 0;
+    if (n) { const s = el("span", "sw-" + sw); s.style.width = pct.toFixed(2) + "%";
+      s.title = `${label}: ${fmt(n)} (${pct.toFixed(1)}%)`; bar.append(s); }
+    const b = el("button"); b.dataset.f = k; b.setAttribute("aria-pressed", "false");
+    const dot = el("span", "dot"); dot.style.background = `var(${varn})`;
+    b.append(dot, document.createTextNode(label + " "));
+    const num = el("b", null, fmt(n)); b.append(num);
+    b.append(document.createTextNode(` · ${txnTotal ? (n / txnTotal * 100).toFixed(0) : 0}%`));
+    b.addEventListener("click", () => setFilter(state.filter === k ? "all" : k));
+    leg.append(b);
+  });
+
+  // ---- tab counts ----
+  $("#tc-fw").textContent = fw.n_services;
+  $("#tc-nat").textContent = DATA.native.length;
+  $("#tc-surf").textContent = DATA.classes.length;
+
+  // ---- state ----
+  const state = { filter: "all", q: "", sort: "exposed", open: new Set(), tab: "framework" };
+
+  function matchTxn(tx) {
+    if (state.filter !== "all" && tx.status !== state.filter) return false;
+    if (state.q && !tx.method.toLowerCase().includes(state.q)) return false;
+    return true;
+  }
+  function svcQMatch(s) {
+    return !state.q || s.service.toLowerCase().includes(state.q)
+      || (s.interface || "").toLowerCase().includes(state.q);
+  }
+
+  function miniBar(counts) {
+    const total = STK.reduce((a, [k]) => a + (counts[k] || 0), 0) || 1;
+    const b = el("div", "bar");
+    STK.forEach(([k, sw]) => { const n = counts[k] || 0; if (!n) return;
+      const s = el("span", "sw-" + sw); s.style.width = (n / total * 100) + "%"; b.append(s); });
+    const wrap = el("div", "mini"); wrap.append(b);
+    const nums = el("div", "nums");
+    STK.forEach(([k, sw, label]) => { const n = counts[k] || 0; if (!n) return;
+      const sp = el("span"); const bb = el("b", null, fmt(n));
+      bb.style.color = `var(--${sw})`; sp.append(bb, document.createTextNode(" " + label.toLowerCase()));
+      nums.append(sp); });
+    wrap.append(nums); return wrap;
+  }
+
+  function renderFramework() {
+    const list = $("#svclist"); list.innerHTML = "";
+    let svcs = fw.services.filter(s => {
+      const qm = svcQMatch(s);
+      if (state.filter === "all") return qm || (state.q && s.transactions.some(matchTxn));
+      // status filter: show services that have >=1 matching txn (respecting q too)
+      return s.transactions.some(matchTxn) && (qm || s.transactions.some(matchTxn));
+    });
+    const key = { exposed: s => -(s.counts.ungated || 0),
+      txns: s => -s.transactions.length, name: s => s.service };
+    svcs.sort((a, b) => { const ka = key[state.sort](a), kb = key[state.sort](b);
+      return ka < kb ? -1 : ka > kb ? 1 : a.service.localeCompare(b.service); });
+
+    const totalExposed = svcs.reduce((a, s) => a + (s.counts.ungated || 0), 0);
+    $("#fw-result").innerHTML = `<b>${svcs.length}</b> service${svcs.length === 1 ? "" : "s"} `
+      + `· <b>${fmt(totalExposed)}</b> exposed transaction${totalExposed === 1 ? "" : "s"} shown`
+      + (state.filter !== "all" || state.q ? " (filtered)" : "");
+
+    if (!svcs.length) { list.append(Object.assign(el("div", "empty"),
+      { textContent: "No services match." })); return; }
+
+    const drill = state.filter !== "all" || !!state.q;
+    svcs.forEach(s => {
+      const card = el("div", "svc");
+      const exposed = s.counts.ungated || 0;
+      if (exposed) card.classList.add("exposed-lead");
+      const open = drill || state.open.has(s.service);
+      if (open) card.classList.add("open");
+
+      const head = el("div", "svc-head");
+      const id = el("div", "svc-id");
+      const name = el("div", "svc-name");
+      const caret = el("span", "caret"); caret.innerHTML =
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5l8 7-8 7z"/></svg>';
+      name.append(caret, document.createTextNode(s.service || "(unnamed)"));
+      id.append(name);
+      if (s.interface) id.append(Object.assign(el("div", "svc-iface"), { textContent: s.interface }));
+      head.append(id);
+
+      const metrics = el("div", "svc-metrics");
+      metrics.append(miniBar(s.counts));
+      const ex = el("div", "expct" + (exposed ? "" : " zero"));
+      ex.append(document.createTextNode(fmt(exposed)), Object.assign(el("small"), { textContent: "exposed" }));
+      metrics.append(ex);
+      head.append(metrics);
+      card.append(head);
+
+      head.addEventListener("click", () => {
+        if (drill) return; // in drill mode rows are forced open
+        if (state.open.has(s.service)) state.open.delete(s.service);
+        else state.open.add(s.service);
+        renderFramework();
+      });
+
+      if (open) {
+        const shown = (drill ? s.transactions.filter(matchTxn) : s.transactions)
+          .slice().sort((a, b) => (a.code ?? 1e9) - (b.code ?? 1e9));
+        const box = el("div", "txns");
+        shown.slice(0, 300).forEach(tx => box.append(txnRow(tx)));
+        if (shown.length > 300) box.append(Object.assign(el("div", "more"),
+          { textContent: `… ${fmt(shown.length - 300)} more not shown` }));
+        if (!shown.length) box.append(Object.assign(el("div", "more"),
+          { textContent: "no transactions match the current filter" }));
+        card.append(box);
+        if (s.note) card.append(Object.assign(el("div", "svc-note"), { textContent: s.note }));
+      }
+      list.append(card);
+    });
+  }
+
+  function txnRow(tx) {
+    const r = el("div", "txn");
+    r.append(Object.assign(el("div", "code"), { textContent: tx.code == null ? "—" : "#" + tx.code }));
+    const m = el("div", "m");
+    m.append(Object.assign(el("div", "mn"), { textContent: tx.method }));
+    if (tx.permissions && tx.permissions.length) {
+      const perms = [...new Set(tx.permissions.map(p => p.replace(/^android\.permission\./, "")))];
+      m.append(Object.assign(el("div", "perm"), { textContent: "⟐ " + perms.join(", ") }));
+    }
+    if (tx.via && tx.via !== "direct")
+      m.append(Object.assign(el("div", "via"), { textContent: "via " + tx.via }));
+    r.append(m);
+    const st = el("div", "st");
+    const label = { "ungated": "exposed", "gated": "gated", "needs-review": "review",
+      "not-attempted": "not attempted" }[tx.status] || tx.status;
+    st.append(Object.assign(el("span", "status " + stClass(tx.status)), { textContent: label }));
+    r.append(st);
+    return r;
+  }
+
+  // ---- native ----
+  const NAT_ORDER = ["open", "gated", "unresolved", "kernel", "aggregate", "latent"];
+  const NAT_LABEL = { open: "Open — surface confirmed", gated: "Gated — caller check present",
+    unresolved: "Unresolved — no binary located", kernel: "Kernel ioctl surface",
+    aggregate: "Aggregate — multi-member attribute", latent: "Latent — nothing on this image" };
+  const NAT_ST = { open: "ungated", gated: "gated", unresolved: "needs-review",
+    kernel: "not-attempted", aggregate: "needs-review", latent: "not-attempted" };
+  function renderNative() {
+    const wrap = $("#natlist"); wrap.innerHTML = "";
+    const groups = {};
+    DATA.native.forEach(n => (groups[n.attribution] = groups[n.attribution] || []).push(n));
+    const order = [...NAT_ORDER.filter(k => groups[k]), ...Object.keys(groups).filter(k => !NAT_ORDER.includes(k))];
+    order.forEach(k => {
+      const g = groups[k]; const sec = el("div", "ngroup");
+      const h = el("h3");
+      h.append(Object.assign(el("span", "status " + stClass(NAT_ST[k] || "not-attempted")),
+        { textContent: k }));
+      h.append(document.createTextNode((NAT_LABEL[k] || k) + " · " + g.length));
+      sec.append(h);
+      g.sort((a, b) => a.setype.localeCompare(b.setype)).forEach(n => {
+        const row = el("div", "nrow");
+        const top = el("div", "top");
+        top.append(Object.assign(el("div", "tgt"), { textContent: n.setype + ":" + n.tclass }));
+        if (n.confidence) top.append(Object.assign(el("div", "conf"),
+          { textContent: n.method + " · " + n.confidence + " · " + n.resolution }));
+        row.append(top);
+        if (n.handler) row.append(Object.assign(el("div", "hand"), { textContent: "↳ " + n.handler }));
+        if (n.artifact) row.append(Object.assign(el("div", "art"), { textContent: n.artifact }));
+        const tags = el("div", "tags");
+        (n.checks || []).forEach(c => tags.append(Object.assign(el("span", "tag"),
+          { textContent: c.split("(")[0].split("::").pop() })));
+        (n.ioctls || []).forEach(c => tags.append(Object.assign(el("span", "tag"), { textContent: c })));
+        if (tags.children.length) row.append(tags);
+        if (n.notes) row.append(Object.assign(el("div", "nnote"), { textContent: n.notes }));
+        sec.append(row);
+      });
+      wrap.append(sec);
+    });
+  }
+
+  // ---- surface ----
+  function renderSurface() {
+    const t = $("#surftab"); t.innerHTML = "";
+    const thead = el("tr");
+    ["Class", "Reachable", "In-code gate (COD)", ""].forEach(h => thead.append(Object.assign(el("th"), { textContent: h })));
+    t.append(thead);
+    const COD = [["allow", "cod-allow"], ["unknown", "cod-unknown"], ["deny", "cod-deny"],
+      ["n/a", "cod-na"]];
+    DATA.classes.forEach(c => {
+      const tr = el("tr");
+      tr.append(Object.assign(el("td", "cls"), { textContent: c.class }));
+      tr.append(Object.assign(el("td", "n"), { textContent: fmt(c.n) }));
+      const bcell = el("td");
+      const total = Object.values(c.cod).reduce((a, b) => a + b, 0) || 1;
+      const b = el("div", "codbar");
+      COD.forEach(([k, cls]) => { const n = c.cod[k] || 0; if (!n) return;
+        const s = el("span", cls); s.style.width = (n / total * 100) + "%";
+        s.title = `${k}: ${n}`; b.append(s); });
+      bcell.append(b); tr.append(bcell);
+      const detail = COD.map(([k]) => c.cod[k] ? `${c.cod[k]} ${k}` : null).filter(Boolean).join(" · ");
+      tr.append(Object.assign(el("td"), { textContent: detail, style: "color:var(--muted);font-size:11.5px" }));
+      t.append(tr);
+    });
+  }
+
+  // ---- controls ----
+  function setFilter(f) {
+    state.filter = f;
+    $$(".chip").forEach(c => c.setAttribute("aria-pressed", String(c.dataset.f === f)));
+    $$("#gatelegend button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.f === f)));
+    renderFramework();
+  }
+  const $$ = s => Array.from(document.querySelectorAll(s));
+  $$(".chip").forEach(c => c.addEventListener("click", () => setFilter(c.dataset.f)));
+  $("#sort").addEventListener("change", e => { state.sort = e.target.value; renderFramework(); });
+  let qt;
+  $("#q").addEventListener("input", e => { clearTimeout(qt);
+    qt = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); renderFramework(); }, 90); });
+
+  $("#tabs").addEventListener("click", e => {
+    const btn = e.target.closest("button[data-tab]"); if (!btn) return;
+    state.tab = btn.dataset.tab;
+    $$("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b === btn)));
+    ["framework", "native", "surface"].forEach(t => $("#tab-" + t).hidden = t !== state.tab);
+    if (state.tab === "native" && !$("#natlist").children.length) renderNative();
+    if (state.tab === "surface" && !$("#surftab").children.length) renderSurface();
+  });
+
+  $("#foot").textContent = `sesurface · ${DATA.source} · ${fmt(DATA.totals.findings)} findings · `
+    + `${fmt(fw.n_services)} framework services · ${fmt(txnTotal)} transactions · ${DATA.generated}`;
+
+  renderFramework();
+})();
+</script>

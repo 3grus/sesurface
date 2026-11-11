@@ -163,6 +163,10 @@ class Attribution:
     method: str = ""                        # elf-dynsym | ghidra | ioctl-decode | jadx
     confidence: str = ""                    # high | medium | low
     notes: str = ""
+    # jadx (framework) half: per-transaction detail + the coverage ledger.
+    service: str = ""                       # registered ServiceManager name, if known
+    transactions: list = field(default_factory=list)   # [{code, method, status, ...}]
+    coverage: dict = field(default_factory=dict)        # {gated, ungated, needs-review,..}
 
     def cod_decision(self) -> Optional[Decision]:
         """The Decision to write into the in-code gate, or None to leave it as-is.
@@ -208,7 +212,18 @@ class Attribution:
             return "not-attempted"         # services.jar not decompiled yet
         if a in ("kernel", "latent"):
             return "decided"               # deterministic / genuinely absent
-        if self.method in ("ghidra", "jadx"):
+        if self.method == "jadx":
+            # Framework service: the resolution is the *worst* per-transaction status
+            # in its ledger, so a service with any unreviewed transaction is not
+            # waved through as settled.
+            cov = self.coverage or {}
+            decided = cov.get("gated", 0) + cov.get("ungated", 0)
+            if cov.get("not-attempted") and decided == 0:
+                return "not-attempted"
+            if cov.get("needs-review") or cov.get("not-attempted"):
+                return "needs-review"
+            return "decided"
+        if self.method == "ghidra":
             return "decided"               # call-site confirmed
         # elf-dynsym and anything else: symbol-level presence/absence -- real signal,
         # but not a confirmed call site, so a reviewer should still eyeball it.
@@ -311,6 +326,10 @@ class Attributor:
         # caches keyed by on-device path
         self._extracted: dict[str, Optional[str]] = {}
         self._syms: dict[str, list[str]] = {}
+        # framework (jadx) half: built lazily on the first framework finding.
+        self._fw_analyzer = None            # FrameworkAnalyzer | None
+        self._fw_reason = ""                # why it is unavailable, if so
+        self._fw_tried = False
 
     # ---- image/file plumbing --------------------------------------------- #
 
@@ -344,6 +363,148 @@ class Attributor:
         self._syms[device_path] = syms
         return syms
 
+    # ---- framework (jadx) half ------------------------------------------- #
+
+    def _framework(self):
+        """Lazily build the FrameworkAnalyzer; returns (analyzer|None, reason).
+
+        Decompiles services.jar (the impls) and, if present, framework.jar (the
+        authoritative transaction codes). The decompile is cached by jar content, so
+        this slow step runs at most once per image across all framework findings.
+        """
+        if self._fw_tried:
+            return self._fw_analyzer, self._fw_reason
+        self._fw_tried = True
+        from . import jadx as J
+        cache_root = os.path.join(self._scratch, "jadx")
+        svc_host = self._extract("/system/framework/services.jar")
+        if not svc_host:
+            self._fw_reason = "services.jar not present in the carved partitions"
+            return None, self._fw_reason
+        try:
+            svc_src = J.decompile_jar(svc_host, cache_root)
+        except J.JadxError as e:
+            self._fw_reason = str(e)
+            return None, self._fw_reason
+        fw_src = None
+        if "/system/framework/framework.jar" in self._model.inodes.meta:
+            fw_host = self._extract("/system/framework/framework.jar")
+            if fw_host:
+                try:
+                    fw_src = J.decompile_jar(fw_host, cache_root)
+                except J.JadxError:
+                    fw_src = None    # optional: fall back to method-level transactions
+        self._fw_analyzer = J.FrameworkAnalyzer(svc_src, fw_src)
+        return self._fw_analyzer, ""
+
+    @staticmethod
+    def _txn_dict(t, service: str = "") -> dict:
+        d = {"code": t.code, "method": t.method, "status": t.status, "via": t.via,
+             "checks": list(t.checks), "permissions": list(t.permissions)}
+        if service:
+            d["service"] = service
+        if t.note:
+            d["note"] = t.note
+        return d
+
+    def _attr_from_cod(self, setype: str, tclass: str, cod) -> Attribution:
+        """Build an Attribution from one service's per-transaction COD ledger."""
+        cov = cod.counts()
+        ungated = cod.ungated()
+        total = sum(cov.values())
+        note = (f"framework service `{cod.service or '?'}` "
+                f"({cod.interface or 'interface?'}); {total} transaction(s): "
+                f"{cov['gated']} gated, {cov['ungated']} ungated (actionable), "
+                f"{cov['needs-review']} needs-review, "
+                f"{cov['not-attempted']} not-attempted.")
+        if ungated:
+            note += " ungated e.g.: " + ", ".join(
+                f"{t.method}" + (f"(#{t.code})" if t.code is not None else "")
+                for t in ungated[:6])
+        if cod.note:
+            note += f"  [{cod.note}]"
+        verdict = cod.verdict()
+        handler = (f"{cod.impl_class}.onTransact (per-transaction)"
+                   if cod.impl_class else "(Stub.onTransact)")
+        caller = "found" if cov["gated"] else ("none" if verdict == "open" else "n/a")
+        return Attribution(
+            setype, tclass, verdict, handler=handler, artifact=cod.impl_file,
+            tool="jadx", caller_check=caller, method="jadx", confidence="high",
+            notes=note, service=cod.service,
+            transactions=[self._txn_dict(t) for t in cod.transactions],
+            coverage=cov)
+
+    def _attr_framework_all(self, setype: str, tclass: str) -> Attribution:
+        """The aggregate COD behind the single `system_server:binder` finding.
+
+        system_server multiplexes the whole framework service surface, so this rolls
+        every hosted service's per-transaction ledger into one verdict + coverage, and
+        lists the actionable (ungated) transactions as the audit worklist.
+        """
+        analyzer, reason = self._framework()
+        if analyzer is None:
+            return self._jadx_deferred(setype, tclass, reason)
+        cods = analyzer.analyze_all()
+        tot = {"gated": 0, "ungated": 0, "needs-review": 0, "not-attempted": 0}
+        actionable: list[dict] = []
+        review: list[dict] = []
+        for cod in cods:
+            for k, v in cod.counts().items():
+                tot[k] = tot.get(k, 0) + v
+            for t in cod.transactions:
+                if t.status == "ungated":
+                    actionable.append(self._txn_dict(t, cod.service))
+                elif t.status == "needs-review":
+                    review.append(self._txn_dict(t, cod.service))
+        total = sum(tot.values())
+        verdict = ("open" if tot["ungated"] else
+                   "gated" if tot["gated"] else "unresolved")
+        note = (f"{len(cods)} framework services hosted in system_server; {total} "
+                f"transactions: {tot['gated']} gated, {tot['ungated']} ungated "
+                f"(actionable), {tot['needs-review']} needs-review, "
+                f"{tot['not-attempted']} not-attempted. The ungated transactions are "
+                "directly reachable by any app that can bind system_server; see the "
+                "per-service service_manager findings for the method-level breakdown.")
+        # Cap the embedded lists so the JSON stays sane; counts carry the full totals.
+        txns = actionable[:200] + review[:100]
+        return Attribution(
+            setype, tclass, verdict,
+            handler="system_server (framework service multiplexer)",
+            artifact="/system/framework/services.jar", tool="jadx",
+            caller_check="found" if tot["gated"] else "none", method="jadx",
+            confidence="high", notes=note, service="system_server",
+            transactions=txns, coverage=tot)
+
+    def _jadx_deferred(self, setype: str, tclass: str, reason: str) -> Attribution:
+        """A framework finding we could not decompile (jadx missing/failed)."""
+        return Attribution(
+            setype, tclass, "unresolved", tool="jadx", caller_check="unknown",
+            method="jadx-deferred", confidence="none",
+            notes="framework service hosted in system_server, but the jadx pass could "
+                  f"not run: {reason}. Install jadx (`sesurface doctor`) to read the "
+                  "Stub/onTransact permission checks.")
+
+    def _attr_service_manager(self, f: Finding) -> Attribution:
+        """COD for a service_manager finding: a named AIDL service, if framework."""
+        analyzer, reason = self._framework()
+        names = self._model.contexts.services_by_type.get(f.setype, [])
+        if analyzer is not None:
+            for name in names:
+                cod = analyzer.analyze_service(name)
+                if cod is not None and cod.transactions:
+                    return self._attr_from_cod(f.setype, f.tclass, cod)
+            # Resolved jadx but the service is not in services.jar: a native service.
+            return Attribution(
+                f.setype, f.tclass, "skipped",
+                notes="native-registered service (not in services.jar); its in-code "
+                      "gate is the hosting daemon's binder handler -- see that "
+                      "domain's binder finding for the ELF-scan verdict.")
+        # jadx unavailable: say so if it *might* be a framework service.
+        if names:
+            return self._jadx_deferred(f.setype, f.tclass, reason)
+        return Attribution(f.setype, f.tclass, "skipped",
+                           notes="no registered service name for this type")
+
     # ---- dispatch -------------------------------------------------------- #
 
     def attribute(self, f: Finding) -> Attribution:
@@ -351,6 +512,8 @@ class Attributor:
         tclass = f.tclass
         if tclass in ("binder", "unix_stream_socket", "unix_dgram_socket"):
             return self._attr_server(f)
+        if tclass == "service_manager":
+            return self._attr_service_manager(f)
         if tclass in ("hwservice_manager",):
             return self._attr_hwservice(f)
         if tclass in ("chr_file", "blk_file") and f.xperms:
@@ -382,16 +545,23 @@ class Attributor:
         bin_refs = [r for r in f.code_refs if r.tool in ("ghidra", "jadx")]
         if not bin_refs:
             bin_refs = self._loc.locate_finding(f)
-        # Framework (system_server / services.jar) is the jadx half -- flag for jadx.
+        # Framework (system_server / services.jar) is the jadx half: decompile and
+        # read the Stub/onTransact permission checks, per transaction.
         for r in bin_refs:
-            if r.artifact.endswith(".jar"):
-                return Attribution(
-                    f.setype, f.tclass, "gated", handler="(Stub.onTransact in "
-                    f"{os.path.basename(r.artifact)})", artifact=r.artifact, tool="jadx",
-                    caller_check="found", method="jadx-deferred", confidence="low",
-                    notes="framework service hosted in system_server; decompile "
-                          "services.jar and read the Stub/onTransact permission checks "
-                          "(enforceCallingPermission / checkPermission / AppOps)")
+            if r.artifact.endswith(".jar") and f.tclass == "binder":
+                # AIDL/jadx analysis is binder-specific. A socket channel to a
+                # framework domain is not the binder surface, so sockets fall through
+                # to the native scan (and usually end up honestly unresolved).
+                # A concrete framework service type resolves to its named service;
+                # system_server itself multiplexes them all -> the aggregate ledger.
+                names = self._model.contexts.services_by_type.get(f.setype, [])
+                analyzer, reason = self._framework()
+                if analyzer is not None:
+                    for name in names:
+                        cod = analyzer.analyze_service(name)
+                        if cod is not None and cod.transactions:
+                            return self._attr_from_cod(f.setype, f.tclass, cod)
+                return self._attr_framework_all(f.setype, f.tclass)
             if r.artifact.startswith("("):
                 return Attribution(f.setype, f.tclass, "latent", artifact=r.artifact,
                                    notes=r.why or "no host binary on this image")
@@ -617,6 +787,11 @@ def writeback(f: Finding, attr: Attribution) -> None:
         bits.append(f"caller-check={attr.caller_check}")
     if attr.ioctls:
         bits.append("ioctls=[" + "; ".join(attr.ioctls) + "]")
+    if attr.coverage:
+        bits.append("transactions=[" + ", ".join(
+            f"{k}={attr.coverage[k]}" for k in
+            ("gated", "ungated", "needs-review", "not-attempted")
+            if attr.coverage.get(k)) + "]")
     v.evidence = "  |  ".join(bits)
     v.detail = {
         "attribution": attr.attribution,
@@ -631,6 +806,13 @@ def writeback(f: Finding, attr: Attribution) -> None:
         "confidence": attr.confidence,
         "notes": attr.notes,
     }
+    # jadx (framework) half: attach the structured per-transaction ledger + coverage.
+    if attr.service:
+        v.detail["service"] = attr.service
+    if attr.coverage:
+        v.detail["coverage"] = attr.coverage
+    if attr.transactions:
+        v.detail["transactions"] = attr.transactions
 
 
 def attribute_findings(model: ImageModel, locator: CodeLocator, files: ImageFiles,

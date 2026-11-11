@@ -215,6 +215,20 @@ def _cmd_attribute(args: argparse.Namespace) -> int:
         if a.ioctls:
             print(f"         ioctls  : {len(a.ioctls)} -> "
                   + "; ".join(a.ioctls[:6]) + (" ..." if len(a.ioctls) > 6 else ""))
+        if a.coverage:
+            c = a.coverage
+            print(f"         txns    : {sum(c.values())} "
+                  f"({c.get('gated', 0)} gated, {c.get('ungated', 0)} ungated, "
+                  f"{c.get('needs-review', 0)} needs-review, "
+                  f"{c.get('not-attempted', 0)} not-attempted)")
+            ung = [t for t in a.transactions if t.get("status") == "ungated"]
+            if ung:
+                sample = ", ".join(
+                    t.get("method", "")
+                    + (f"#{t['code']}" if t.get("code") is not None else "")
+                    + (f"@{t['service']}" if t.get("service") else "")
+                    for t in ung[:6])
+                print(f"         ungated : {sample}" + (" ..." if len(ung) > 6 else ""))
         print(f"         method  : {a.method} (confidence {a.confidence}) "
               f"· status: {a.resolution()}")
         if a.notes:
@@ -236,6 +250,23 @@ def _cmd_attribute(args: argparse.Namespace) -> int:
                       ("needs-review", "not-attempted", "unresolved"))
     print(f"coverage: {', '.join(parts)}  ({outstanding} of {len(results)} still "
           "need analysis)", file=sys.stderr)
+    # Framework (jadx) per-transaction ledger -- the deliverable for "what is
+    # actually reachable" behind the system_server binder surface.
+    txn: dict[str, int] = {}
+    nsvc = 0
+    for a in results:
+        if a.coverage:
+            nsvc += 1
+            for k, v in a.coverage.items():
+                txn[k] = txn.get(k, 0) + v
+    if txn:
+        total = sum(txn.values())
+        decided = txn.get("gated", 0) + txn.get("ungated", 0)
+        print(f"framework: {total} transactions across {nsvc} service finding(s) -- "
+              f"{txn.get('gated', 0)} gated, {txn.get('ungated', 0)} ungated "
+              f"(actionable), {decided} decided, {txn.get('needs-review', 0)} "
+              f"needs-review, {txn.get('not-attempted', 0)} not-attempted",
+              file=sys.stderr)
 
     if args.json:
         with open(args.json, "w") as f:
