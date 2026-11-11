@@ -1,0 +1,12 @@
+# Firmware fixtures (large, downloaded) and extracted trees.
+images/
+# Caches and venv.
+.venv/
+__pycache__/
+*.pyc
+.sesurface-cache/
+baselines/
+# Generated analysis output.
+out/
+# Local handoff docs.
+docs/
