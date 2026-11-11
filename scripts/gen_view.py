@@ -64,6 +64,7 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
                 services.append({
                     "service": cod.service, "interface": cod.interface,
                     "impl_class": cod.impl_class, "impl_file": cod.impl_file,
+                    "impl_jar": cod.impl_jar,
                     "note": cod.note, "counts": cod.counts(),
                     "transactions": [
                         {"code": t.code, "method": t.method, "status": t.status,

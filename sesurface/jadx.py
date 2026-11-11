@@ -175,9 +175,10 @@ class ServiceCOD:
     service: str                        # registered ServiceManager name ("" if unknown)
     interface: str                      # AIDL interface the impl extends
     impl_class: str
-    impl_file: str
+    impl_file: str                      # class path within its jar, e.g. com/android/...
     transactions: list[Transaction] = field(default_factory=list)
     note: str = ""
+    impl_jar: str = ""                  # on-device jar the impl ships in (the file to open)
 
     def counts(self) -> dict[str, int]:
         c = {"gated": 0, "ungated": 0, "needs-review": 0, "not-attempted": 0}
@@ -242,7 +243,8 @@ class FrameworkAnalyzer:
                                     behind the single `system_server:binder` finding)
     """
 
-    def __init__(self, sources_dir, framework_dir: Optional[str] = None):
+    def __init__(self, sources_dir, framework_dir: Optional[str] = None,
+                 root_origins: Optional[dict] = None):
         # One analyzer can span several decompiled trees: services.jar plus the APEX
         # `javalib` service jars (appsearch, tethering/connectivity, wifi, uwb, ...),
         # whose impls register and enforce exactly like the in-tree ones. `sources_dir`
@@ -250,6 +252,11 @@ class FrameworkAnalyzer:
         self._srcs: list[str] = ([sources_dir] if isinstance(sources_dir, str)
                                  else list(sources_dir))
         self._src = self._srcs[0] if self._srcs else ""
+        # {decompiled source root -> the on-device jar it was decompiled from}, so a
+        # resolved impl can name the exact file an analyst opens (services.jar vs a
+        # particular APEX javalib jar). Keys are normalised absolute paths.
+        self._origins: dict[str, str] = {os.path.abspath(k): v
+                                         for k, v in (root_origins or {}).items()}
         # Optional decompiled framework.jar: supplies the authoritative transaction
         # set (and numeric codes) per AIDL interface, which services.jar lacks.
         self._fw = framework_dir
@@ -289,6 +296,14 @@ class FrameworkAnalyzer:
             if not r.startswith("..") and len(r) < len(best):
                 best = r
         return best
+
+    def _origin_jar(self, path: str) -> str:
+        """The on-device jar a decompiled file came from (via its source root)."""
+        ap = os.path.abspath(path)
+        for src in sorted(self._srcs, key=len, reverse=True):
+            if ap.startswith(os.path.abspath(src) + os.sep):
+                return self._origins.get(os.path.abspath(src), "")
+        return ""
 
     # ---- authoritative transaction set (from framework.jar) --------------- #
 
@@ -402,7 +417,7 @@ class FrameworkAnalyzer:
         if res is None:
             path = self._registrations()[name][0]
             return ServiceCOD(service=name, interface="", impl_class="",
-                              impl_file=self._relpath(path),
+                              impl_file=self._relpath(path), impl_jar=self._origin_jar(path),
                               note="registered here but its `extends *.Stub` impl could "
                                    "not be resolved (impl in an unparsed unit, or a "
                                    "non-literal registration)")
@@ -581,7 +596,8 @@ class FrameworkAnalyzer:
         interface = res.interface
         cod = ServiceCOD(service=service, interface=interface,
                          impl_class=res.impl_class,
-                         impl_file=self._relpath(res.path))
+                         impl_file=self._relpath(res.path),
+                         impl_jar=self._origin_jar(res.path))
         file_methods = res.file_methods
         impl_methods = res.impl_methods
 

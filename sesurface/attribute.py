@@ -405,16 +405,21 @@ class Attributor:
             self._fw_reason = str(e)
             return None, self._fw_reason
         # APEX javalib service jars: decompile each (best-effort; a jar that fails to
-        # decompile is skipped with the others still contributing).
+        # decompile is skipped with the others still contributing). `origins` maps each
+        # decompiled tree back to its on-device jar so a resolved impl can name the
+        # exact file an analyst opens (services.jar vs a specific APEX javalib jar).
         roots = [svc_src]
+        origins = {svc_src: "/system/framework/services.jar"}
         for dev in self._apex_javalib_jars():
             host = self._extract(dev)
             if not host:
                 continue
             try:
-                roots.append(J.decompile_jar(host, cache_root))
+                root = J.decompile_jar(host, cache_root)
             except J.JadxError:
                 continue
+            roots.append(root)
+            origins[root] = dev
         fw_src = None
         if "/system/framework/framework.jar" in self._model.inodes.meta:
             fw_host = self._extract("/system/framework/framework.jar")
@@ -423,7 +428,7 @@ class Attributor:
                     fw_src = J.decompile_jar(fw_host, cache_root)
                 except J.JadxError:
                     fw_src = None    # optional: fall back to method-level transactions
-        self._fw_analyzer = J.FrameworkAnalyzer(roots, fw_src)
+        self._fw_analyzer = J.FrameworkAnalyzer(roots, fw_src, root_origins=origins)
         return self._fw_analyzer, ""
 
     @staticmethod

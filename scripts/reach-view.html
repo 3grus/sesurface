@@ -216,6 +216,12 @@
 
   .svc-note { padding: 8px 14px; font-size: 11.5px; color: var(--review);
     background: var(--review-soft); border-top: 1px solid var(--line); }
+  .svc-src { padding: 8px 14px; font-size: 11.5px; color: var(--muted);
+    border-top: 1px solid var(--line); background: var(--panel); overflow-wrap: anywhere; }
+  .svc-src .lbl { color: var(--faint); text-transform: uppercase; letter-spacing: .05em;
+    font-size: 10px; font-weight: 700; margin-right: 6px; }
+  .svc-src .path { font-family: var(--mono); color: var(--fg); }
+  .svc-src .sep { color: var(--faint); margin: 0 5px; }
 
   /* ---- native rows ---- */
   .ngroup { margin-bottom: 18px; }
@@ -606,6 +612,19 @@
       });
 
       if (open) {
+        // Where the code lives on disk — the file an analyst opens (jadx/JEB on the
+        // jar; the class path is inside it). Shown only when the row is expanded.
+        if (s.impl_file || s.impl_jar) {
+          const src = el("div", "svc-src");
+          src.append(Object.assign(el("span", "lbl"), { textContent: "code" }));
+          if (s.impl_jar) {
+            src.append(Object.assign(el("span", "path"), { textContent: s.impl_jar }));
+            src.append(Object.assign(el("span", "sep"), { textContent: "›" }));
+          }
+          src.append(Object.assign(el("span", "path"),
+            { textContent: s.impl_file + (s.impl_class ? "  (" + s.impl_class + ")" : "") }));
+          card.append(src);
+        }
         const shown = (drill ? s.transactions.filter(matchTxn) : s.transactions)
           .slice().sort((a, b) => (a.code ?? 1e9) - (b.code ?? 1e9));
         const box = el("div", "txns");
