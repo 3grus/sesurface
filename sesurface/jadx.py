@@ -210,10 +210,20 @@ class ServiceCOD:
 # Framework analyzer: index the decompiled tree, analyse a service
 # --------------------------------------------------------------------------- #
 
+@dataclass
+class _Resolved:
+    """A registered service resolved to the code needed to classify it."""
+    interface: str                                  # AIDL interface fqname
+    impl_class: str
+    path: str                                       # file the concrete impl lives in
+    impl_methods: dict                              # name -> JavaMethod (impl + bases)
+    file_methods: dict                              # name -> JavaMethod (for 1-hop)
+
+
 _STUB_EXTENDS = re.compile(r"\.Stub$")
 _REGISTER = re.compile(
     r"(?:publishBinderService|ServiceManager\.addService|addService)\s*\(\s*"
-    r'"(?P<name>[\w./-]+)"\s*,\s*(?P<impl>[\w.$()]+)?')
+    r'"(?P<name>[\w./-]+)"\s*,\s*(?P<impl>[^;\n]{0,200})')
 
 # Names that look like a real permission-enforcing helper (one-hop decided): an
 # enforce*/check*/assert*/require* method, or an `*Allowed()` gate helper (the
@@ -239,6 +249,9 @@ class FrameworkAnalyzer:
         self._fw = framework_dir
         self._files: Optional[list[str]] = None
         self._registry: Optional[dict[str, tuple[str, str]]] = None  # name->(file, impl)
+        self._clocs: Optional[dict[str, list[str]]] = None    # class name -> files
+        self._children: dict[str, list[str]] = {}             # parent -> [subclasses]
+        self._parsed: dict[str, list] = {}                    # file -> [JavaClass]
         self._iface_cache: dict[str, Optional[dict[str, int]]] = {}
 
     # ---- tree plumbing --------------------------------------------------- #
@@ -290,63 +303,243 @@ class FrameworkAnalyzer:
 
     # ---- service registration index ------------------------------------- #
 
-    def _registrations(self) -> dict[str, tuple[str, str]]:
-        """Map ServiceManager name -> (file, impl-expression) via the register call."""
+    def _build_index(self) -> None:
+        """One pass over the tree: service registrations + a class-name -> files map.
+
+        The class map is built with a cheap `class <Name>` scan (no brace matching),
+        so resolving an impl that lives in a *different* file than its
+        `publishBinderService(...)` call only has to fully parse the few files on that
+        impl's inheritance chain, not the whole tree.
+        """
         if self._registry is not None:
-            return self._registry
+            return
         reg: dict[str, tuple[str, str]] = {}
+        clocs: dict[str, list[str]] = {}
+        children: dict[str, list[str]] = {}
+        cname = re.compile(r"\bclass\s+(\w+)(?:\s*<[^{]*?>)?(?:\s+extends\s+([\w.]+))?")
         for path in self._java_files():
             src = self._read(path)
-            if "BinderService(" not in src and "addService(" not in src:
-                continue
-            for m in _REGISTER.finditer(src):
-                name = m.group("name")
-                if name and name not in reg:
-                    reg[name] = (path, (m.group("impl") or "").strip())
+            for m in cname.finditer(src):
+                clocs.setdefault(m.group(1), []).append(path)
+                if m.group(2):
+                    parent = m.group(2).split(".")[-1]
+                    children.setdefault(parent, []).append(m.group(1))
+            if "BinderService(" in src or "addService(" in src:
+                for m in _REGISTER.finditer(src):
+                    name = m.group("name")
+                    if name and name not in reg:
+                        reg[name] = (path, (m.group("impl") or "").strip())
         self._registry = reg
-        return reg
+        self._clocs = clocs
+        self._children = children
+
+    def _registrations(self) -> dict[str, tuple[str, str]]:
+        self._build_index()
+        return self._registry        # type: ignore[return-value]
+
+    def _classes_in(self, path: str) -> list[jp.JavaClass]:
+        if path not in self._parsed:
+            self._parsed[path] = jp.find_classes(self._read(path))
+        return self._parsed[path]
+
+    def _find_class(self, simple_name: str) -> Optional[tuple[str, jp.JavaClass]]:
+        """Locate a class by simple name (first definition found), with its file."""
+        self._build_index()
+        for path in (self._clocs or {}).get(simple_name, []):
+            for c in self._classes_in(path):
+                if c.name == simple_name:
+                    return path, c
+        return None
+
+    def _descendant_classes(self, name: str,
+                            _depth: int = 3) -> list[tuple[str, jp.JavaClass]]:
+        """Concrete subclasses of `name` (transitively, a few levels), file + class.
+
+        The registered object is sometimes typed as an abstract base; its real
+        transaction overrides live in the subclass, so we gather those too.
+        """
+        self._build_index()
+        out: list[tuple[str, jp.JavaClass]] = []
+        seen: set[str] = set()
+        frontier = [name]
+        for _ in range(_depth):
+            nxt: list[str] = []
+            for parent in frontier:
+                for child in self._children.get(parent, []):
+                    if child in seen:
+                        continue
+                    seen.add(child)
+                    hit = self._find_class(child)
+                    if hit is not None:
+                        out.append(hit)
+                    nxt.append(child)
+            frontier = nxt
+        return out
 
     # ---- analysis -------------------------------------------------------- #
 
     def analyze_service(self, name: str) -> Optional[ServiceCOD]:
         """COD for the service registered under `name`, or None if not in this jar."""
-        reg = self._registrations()
-        hit = reg.get(name)
-        if hit is None:
+        if name not in self._registrations():
             return None
-        path, impl_expr = hit
-        src = self._read(path)
-        impl = self._pick_impl_class(src, impl_expr)
-        if impl is None:
+        res = self._resolve(name)
+        if res is None:
+            path = self._registrations()[name][0]
             return ServiceCOD(service=name, interface="", impl_class="",
                               impl_file=_rel(self._src, path),
-                              note="registered here but no `extends *.Stub` impl class "
-                                   "found in the file (impl may be in another unit)")
-        return self._analyze_impl(src, impl, path, service=name)
+                              note="registered here but its `extends *.Stub` impl could "
+                                   "not be resolved (impl in an unparsed unit, or a "
+                                   "non-literal registration)")
+        return self._analyze(res, service=name)
 
     def analyze_all(self) -> list[ServiceCOD]:
         """COD for every system_server-hosted AIDL service impl in the jar."""
         results: list[ServiceCOD] = []
-        reg = self._registrations()
-        # name registrations first (authoritative), then any remaining impls.
-        seen_files: set[tuple[str, str]] = set()
-        for name, (path, impl_expr) in sorted(reg.items()):
-            src = self._read(path)
-            impl = self._pick_impl_class(src, impl_expr)
-            if impl is None:
-                continue
-            seen_files.add((path, impl.name))
-            results.append(self._analyze_impl(src, impl, path, service=name))
+        for name in sorted(self._registrations()):
+            res = self._resolve(name)
+            if res is not None:
+                results.append(self._analyze(res, service=name))
         return results
 
     # ---- impl resolution ------------------------------------------------- #
+
+    def _resolve(self, name: str) -> Optional["_Resolved"]:
+        """Resolve a registered service to its concrete impl + AIDL interface.
+
+        Handles both the easy case (the `extends *.Stub` impl is a class in the same
+        file as the registration) and the common harder case where the registered
+        object's type is declared in another file and reaches the AIDL Stub through a
+        chain of superclasses (e.g. `AppWidgetServiceImpl`, or
+        `DevicePolicyManagerService extends BaseIDevicePolicyManager extends
+        IDevicePolicyManager.Stub`).
+        """
+        reg_path, impl_expr = self._registrations()[name]
+        reg_src = self._read(reg_path)
+
+        # 1) Same-file Stub impl (nested or top-level).
+        impl = self._pick_impl_class(reg_src, impl_expr)
+        if impl is not None:
+            return _Resolved(
+                interface=impl.extends[:-len(".Stub")],
+                impl_class=impl.name, path=reg_path,
+                impl_methods={m.name: m for m in jp.find_methods(impl.body)},
+                file_methods=_file_method_index(reg_src))
+
+        # 2) Cross-file: resolve the registered object's type, walk to its Stub.
+        typename = self._impl_typename(reg_src, impl_expr)
+        if typename:
+            return self._resolve_typename(typename)
+        return None
+
+    @staticmethod
+    def _first_arg(raw: str) -> str:
+        """The first (impl) argument of a register call, ignoring commas in parens."""
+        depth = 0
+        out = []
+        for ch in raw:
+            if ch in "([":
+                depth += 1
+            elif ch in ")]":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                break
+            out.append(ch)
+        return "".join(out).strip()
+
+    def _impl_typename(self, src: str, impl_expr: str) -> Optional[str]:
+        """The concrete class of the object passed to publishBinderService/addService.
+
+        Handles the forms seen in services.jar: `new FooImpl(...)`, a cast
+        `(IBinder) foo`, a variable assigned `v = new Concrete(...)` or a factory
+        `v = Concrete.main(...)`, and a plain variable whose declared type is concrete.
+        A variable whose only type is the AIDL interface (`IFoo.Stub v`, `IBinder v`)
+        is left unresolved rather than guessed.
+        """
+        if not impl_expr:
+            return None
+        arg = self._first_arg(impl_expr)
+        arg = re.sub(r"^\([\w.]+\)\s*", "", arg).strip()      # strip a cast
+        m = re.match(r"new\s+([\w.]+)", arg)
+        if m:
+            return m.group(1).split(".")[-1]
+        m = re.match(r"([\w.]+)\.\w+\s*\(", arg)              # Concrete.main(...) factory
+        if m:
+            return m.group(1).split(".")[-1]
+        var = re.match(r"([A-Za-z_]\w*)", arg.replace("this.", ""))
+        var = var.group(1) if var else ""
+        if not var or var in ("this", "super"):
+            return None
+        # Resolve the variable: an assignment to a concrete type (including an
+        # `outer.new Inner()` or a `Factory.create(...)`) wins over the declared type,
+        # which is often just the AIDL interface.
+        am = re.search(rf"\b{re.escape(var)}\s*=\s*[^;]*?\bnew\s+([\w.]+)", src)
+        if am:
+            return am.group(1).split(".")[-1]
+        fm = re.search(rf"\b{re.escape(var)}\s*=\s*([\w.]+)\.\w+\s*\(", src)
+        if fm:
+            return fm.group(1).split(".")[-1]
+        dm = re.search(rf"\b([A-Z]\w*(?:\.\w+)*)\s+{re.escape(var)}\s*[;=,)]", src)
+        if dm:
+            t = dm.group(1)
+            if t.endswith(".Stub") or re.fullmatch(r"I[A-Z]\w*", t.split(".")[-1]):
+                return None     # interface-typed field; concrete impl assigned elsewhere
+            return t.split(".")[-1]
+        return None
+
+    def _resolve_typename(self, typename: str) -> Optional["_Resolved"]:
+        """Walk `typename`'s superclass chain to the `*.Stub` that names the AIDL IFace.
+
+        Collects the impl methods across the whole chain (an override may live on the
+        concrete class or an intermediate base) and the enclosing files' methods for
+        one-hop caller-check helper resolution.
+        """
+        chain: list[tuple[str, jp.JavaClass]] = []
+        seen: set[str] = set()
+        cur = typename
+        for _ in range(6):
+            if cur in seen:
+                break
+            seen.add(cur)
+            hit = self._find_class(cur)
+            if hit is None:
+                break
+            path, cls = hit
+            chain.append((path, cls))
+            if cls.extends.endswith(".Stub"):
+                # The registered object may be a *subclass* of the declared type (e.g.
+                # declared BaseIDevicePolicyManager, actually DevicePolicyManagerService).
+                # Pull in subclass bodies too so their overrides aren't counted as
+                # "not-attempted". Subclass methods win over the base's.
+                subs = self._descendant_classes(typename)
+                impl_methods: dict[str, jp.JavaMethod] = {}
+                files: set[str] = set()
+                for p, c in subs + chain:              # subclasses first, then bases
+                    files.add(p)
+                    for mm in jp.find_methods(c.body):
+                        impl_methods.setdefault(mm.name, mm)
+                file_methods: dict[str, jp.JavaMethod] = {}
+                for p in files:
+                    for k, v in _file_method_index(self._read(p)).items():
+                        file_methods.setdefault(k, v)
+                concrete = subs[0][1].name if subs else chain[0][1].name
+                cpath = subs[0][0] if subs else chain[0][0]
+                return _Resolved(
+                    interface=cls.extends[:-len(".Stub")],
+                    impl_class=concrete, path=cpath,
+                    impl_methods=impl_methods, file_methods=file_methods)
+            cur = cls.extends.split("<")[0].strip().split(".")[-1]
+            if not cur:
+                break
+        return None
 
     def _pick_impl_class(self, src: str, impl_expr: str) -> Optional[jp.JavaClass]:
         """The `extends *.Stub` class in `src` that implements the registered service.
 
         Prefer the class whose interface matches the registered field's declared type
-        when we can read it; otherwise fall back to the sole/first Stub impl in the
-        file.
+        when we can read it; otherwise fall back to the sole/largest Stub impl in the
+        file. Returns None when the file defines no `*.Stub` impl at all.
         """
         stubs = [c for c in jp.find_classes(src) if _STUB_EXTENDS.search(c.extends)]
         if not stubs:
@@ -368,18 +561,13 @@ class FrameworkAnalyzer:
         # Fall back to the largest Stub impl (the service, not a small callback).
         return max(stubs, key=lambda c: len(c.body))
 
-    def _analyze_impl(self, src: str, impl: jp.JavaClass, path: str,
-                      service: str = "") -> ServiceCOD:
-        interface = impl.extends[:-len(".Stub")] if impl.extends.endswith(".Stub") \
-            else impl.extends
-        cod = ServiceCOD(service=service, interface=interface, impl_class=impl.name,
-                         impl_file=_rel(self._src, path))
-
-        # Check corpus: every method in the FILE (impl + enclosing/outer helpers),
-        # so a one-hop callee like `enforceFooPermission()` declared on the outer
-        # service class is resolvable.
-        file_methods = _file_method_index(src)
-        impl_methods = {m.name: m for m in jp.find_methods(impl.body)}
+    def _analyze(self, res: "_Resolved", service: str = "") -> ServiceCOD:
+        interface = res.interface
+        cod = ServiceCOD(service=service, interface=interface,
+                         impl_class=res.impl_class,
+                         impl_file=_rel(self._src, res.path))
+        file_methods = res.file_methods
+        impl_methods = res.impl_methods
 
         txns = self.interface_transactions(interface)
         if txns is not None:

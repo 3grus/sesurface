@@ -125,6 +125,87 @@ def test_decompile_jar_raises_when_jadx_missing(tmp_path, monkeypatch):
         jadx.decompile_jar(str(jar), str(tmp_path / "cache"))
 
 
+# --- cross-file / indirect registration resolution -------------------------- #
+
+_IFACE2 = """
+package android.app;
+public interface IBar {
+    public static abstract class Stub extends android.os.Binder implements IBar {
+        static final int TRANSACTION_doA = 1;
+        static final int TRANSACTION_doB = 2;
+    }
+}
+"""
+
+
+def _write(tree, pkg, cls, body):
+    d = tree
+    for part in pkg.split("."):
+        d = d / part
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (cls + ".java")).write_text(body)
+
+
+def test_cross_file_impl_resolution(tmp_path):
+    """Registration in one file, the `extends Stub` impl in another."""
+    svc = tmp_path / "services" / "sources"
+    fw = tmp_path / "framework" / "sources"
+    # registration site, impl is `new BarServiceImpl()` in a different file
+    _write(svc, "com.android.server", "BarService", """
+        package com.android.server;
+        public class BarService extends SystemService {
+            public void onStart() {
+                publishBinderService("bar", new com.android.server.bar.BarServiceImpl());
+            }
+        }
+    """)
+    _write(svc, "com.android.server.bar", "BarServiceImpl", """
+        package com.android.server.bar;
+        public class BarServiceImpl extends android.app.IBar.Stub {
+            public void doA() { getContext().enforceCallingPermission("android.permission.A", "a"); }
+            public void doB() { realWork(); }
+        }
+    """)
+    _write(fw, "android.app", "IBar", _IFACE2)
+    fa = jadx.FrameworkAnalyzer(str(svc), str(fw))
+    cod = fa.analyze_service("bar")
+    assert cod is not None and cod.impl_class == "BarServiceImpl"
+    by = {t.method: t.status for t in cod.transactions}
+    assert by == {"doA": "gated", "doB": "ungated"}
+
+
+def test_subclass_merge_for_abstract_base(tmp_path):
+    """Declared type is an abstract base; overrides live in the concrete subclass."""
+    svc = tmp_path / "services" / "sources"
+    fw = tmp_path / "framework" / "sources"
+    _write(svc, "com.android.server", "BazHost", """
+        package com.android.server;
+        public class BazHost {
+            BaseBaz mService;
+            public void onStart() { publishBinderService("baz", this.mService); }
+        }
+    """)
+    _write(svc, "com.android.server.baz", "BaseBaz", """
+        package com.android.server.baz;
+        public abstract class BaseBaz extends android.app.IBar.Stub {
+            public void doA() { getContext().enforceCallingPermission("android.permission.A", "a"); }
+        }
+    """)
+    _write(svc, "com.android.server.baz", "BazService", """
+        package com.android.server.baz;
+        public class BazService extends BaseBaz {
+            public void doB() { realWork(); }
+        }
+    """)
+    _write(fw, "android.app", "IBar", _IFACE2)
+    fa = jadx.FrameworkAnalyzer(str(svc), str(fw))
+    cod = fa.analyze_service("baz")
+    assert cod is not None
+    by = {t.method: t.status for t in cod.transactions}
+    # doA (in the base) gated, doB (in the subclass) found via merge -> not "not-attempted"
+    assert by == {"doA": "gated", "doB": "ungated"}
+
+
 def test_interface_transactions_reads_codes(tmp_path):
     _svc, fw = _tree(tmp_path)
     fa = jadx.FrameworkAnalyzer(str(tmp_path / "services" / "sources"), fw)
