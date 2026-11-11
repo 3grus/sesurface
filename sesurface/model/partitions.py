@@ -174,8 +174,14 @@ def build_partition_set(image_dir: str, work_dir: str) -> PartitionSet:
                     if lp.size == 0:
                         continue
                     _add_logical(ps, path, lp, work_dir)
-            elif name in ("vbmeta", "vbmeta_system", "metadata", "userdata", "cache"):
+            elif name in ("vbmeta", "vbmeta_system", "metadata", "userdata", "cache",
+                          "encryptionkey"):
                 # Not a filesystem we analyse; skip quietly.
+                continue
+            elif name in ("ramdisk", "boot", "vendor_boot", "init_boot"):
+                # A boot/ramdisk image (cpio, often gzip/lz4-compressed), not a block
+                # filesystem. Indexed separately by `model/ramdisk.py`, which parses
+                # the cpio and mounts its entries at the device root.
                 continue
             else:
                 # A direct filesystem partition (e.g. vendor.img's "vendor").

@@ -213,44 +213,71 @@ def _mount_prefix(p: Partition) -> str:
     return p.mountpoint.rstrip("/")
 
 
+def open_reader(part: Partition, extract_cache: Optional[str] = None):
+    """A metadata reader for a partition, chosen by filesystem, or None if unreadable.
+
+    ext4 is driven by `debugfs` (`Ext4Reader`); EROFS by the pure-Python
+    `ErofsReader` (with `fsck.erofs` for compressed file bytes). Both expose the same
+    `walk()`/`selinux_label()`/`capability()`/`close()` surface, so the indexer treats
+    them uniformly. An `unknown` filesystem (e.g. a cpio ramdisk) has no block reader
+    and is handled by its own module.
+    """
+    if part.fstype == "ext4":
+        return Ext4Reader(part.image)
+    if part.fstype == "erofs":
+        from .erofs import ErofsReader
+        return ErofsReader(part.image, extract_cache=extract_cache)
+    return None
+
+
+def index_partition(idx: InodeIndex, part: Partition, read_labels: bool = True) -> bool:
+    """Walk one partition and merge its inodes into `idx`. Return True if read.
+
+    Later-registered partitions overlay earlier ones at shared paths (the real
+    /vendor content replaces system's empty mount-point directory), which is why the
+    caller controls ordering. An unreadable filesystem records a placeholder so the
+    gap is visible rather than silent.
+    """
+    reader = open_reader(part)
+    if reader is None:
+        idx.meta.setdefault(f"<unreadable:{part.name}:{part.fstype}>",
+                            InodeMeta(None, None, None, None, None))
+        return False
+    prefix = _mount_prefix(part)
+    try:
+        for fs_path, uid, gid, mode in reader.walk():
+            dev_path = f"{prefix}{fs_path}" if prefix else fs_path
+            setype = caps = None
+            is_reg = mode is not None and stmod.S_ISREG(mode)
+            if read_labels:
+                setype = reader.selinux_label(fs_path)
+                # File caps live in an xattr independent of the setuid mode bit,
+                # so read them for every regular file (cheap: most have none).
+                if is_reg:
+                    caps = reader.capability(fs_path)
+            m = InodeMeta(
+                uid=uid, gid=gid, mode=mode, setype=setype, caps=caps,
+                is_dir=stmod.S_ISDIR(mode) if mode is not None else False,
+                is_symlink=stmod.S_ISLNK(mode) if mode is not None else False)
+            idx.meta[dev_path] = m
+            if setype:
+                idx.by_type.setdefault(setype, []).append(dev_path)
+    finally:
+        reader.close()
+    return True
+
+
 def build_inode_index(ps: PartitionSet, read_labels: bool = True) -> InodeIndex:
-    """Walk every ext4 partition and build the on-device inode index.
+    """Walk every readable partition and build the on-device inode index.
 
     `read_labels=False` skips the xattr pass (faster) when only uid/gid/mode are
-    needed. EROFS partitions are not yet handled here (the reference image is ext4);
-    they are flagged so the gap is visible rather than silent.
+    needed. ext4 and EROFS are both handled (see `open_reader`); an unrecognised
+    filesystem is flagged.
     """
     idx = InodeIndex()
     # Process `system` first so later partitions overlay their mountpoints (e.g. the
     # real /vendor content replaces system's empty /vendor mount-point directory).
     order = sorted(ps.partitions.values(), key=lambda p: (p.name != "system", p.name))
     for part in order:
-        if part.fstype != "ext4":
-            # EROFS / unknown: record a placeholder so the caller can report the gap.
-            idx.meta.setdefault(f"<unreadable:{part.name}:{part.fstype}>",
-                                InodeMeta(None, None, None, None, None))
-            continue
-        prefix = _mount_prefix(part)
-        reader = Ext4Reader(part.image)
-        try:
-            nodes = list(reader.walk())
-            for fs_path, uid, gid, mode in nodes:
-                dev_path = f"{prefix}{fs_path}" if prefix else fs_path
-                setype = caps = None
-                is_reg = mode is not None and stmod.S_ISREG(mode)
-                if read_labels:
-                    setype = reader.selinux_label(fs_path)
-                    # File caps live in an xattr independent of the setuid mode bit,
-                    # so read them for every regular file (cheap: most have none).
-                    if is_reg:
-                        caps = reader.capability(fs_path)
-                m = InodeMeta(
-                    uid=uid, gid=gid, mode=mode, setype=setype, caps=caps,
-                    is_dir=stmod.S_ISDIR(mode) if mode is not None else False,
-                    is_symlink=stmod.S_ISLNK(mode) if mode is not None else False)
-                idx.meta[dev_path] = m
-                if setype:
-                    idx.by_type.setdefault(setype, []).append(dev_path)
-        finally:
-            reader.close()
+        index_partition(idx, part, read_labels=read_labels)
     return idx

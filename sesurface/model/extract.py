@@ -23,7 +23,7 @@ class ImageFiles:
 
     def __init__(self, ps: PartitionSet):
         self._ps = ps
-        self._readers: dict[str, Ext4Reader] = {}
+        self._readers: dict[str, object] = {}
         # Non-system mountpoints, longest first, so /vendor beats / for /vendor/*.
         self._mounts = sorted(
             (p for p in ps.partitions.values() if p.name != "system"),
@@ -47,12 +47,17 @@ class ImageFiles:
             return (self._system, device_path)
         return None
 
-    def _reader(self, part: Partition) -> Optional[Ext4Reader]:
-        if part.fstype != "ext4":
-            return None                     # EROFS reads handled elsewhere (TODO).
+    def _reader(self, part: Partition):
+        """A persistent reader for a partition (Ext4Reader or ErofsReader), or None."""
+        if part.fstype not in ("ext4", "erofs"):
+            return None                     # cpio ramdisk etc.: not block-readable here
         r = self._readers.get(part.name)
         if r is None:
-            r = Ext4Reader(part.image)
+            if part.fstype == "ext4":
+                r = Ext4Reader(part.image)
+            else:
+                from .erofs import ErofsReader
+                r = ErofsReader(part.image)
             self._readers[part.name] = r
         return r
 
@@ -65,7 +70,9 @@ class ImageFiles:
         r = self._reader(part)
         if r is None:
             return None
-        return _dump_via_debugfs(r, inner)
+        if isinstance(r, Ext4Reader):
+            return _dump_via_debugfs(r, inner)
+        return r.read_bytes(inner)          # ErofsReader
 
     def read_text(self, device_path: str) -> Optional[str]:
         b = self.read_bytes(device_path)
@@ -79,6 +86,8 @@ class ImageFiles:
         r = self._reader(part)
         if r is None:
             return False
+        if not isinstance(r, Ext4Reader):
+            return r.read_bytes(inner) is not None    # ErofsReader
         out = r._cmd(f'stat "{inner}"')     # Non-empty, non-error output => exists.
         return any("Inode:" in line for line in out)
 
@@ -91,9 +100,11 @@ class ImageFiles:
         r = self._reader(part)
         if r is None:
             return False
+        import os
+        if not isinstance(r, Ext4Reader):
+            return r.extract(inner, dest_path)          # ErofsReader
         # debugfs `dump` writes directly to a host file from the live process.
         r._cmd(f'dump "{inner}" "{dest_path}"')
-        import os
         return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
 
     def close(self) -> None:

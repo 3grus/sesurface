@@ -365,12 +365,30 @@ class Attributor:
 
     # ---- framework (jadx) half ------------------------------------------- #
 
+    def _apex_javalib_jars(self) -> list[str]:
+        """Every `/apex/<pkg>/javalib/service-*.jar` in the indexed image.
+
+        These are the framework services shipped as mainline (APEX) modules --
+        appsearch, tethering/connectivity, wifi, uwb, permission, statsd, ... -- which
+        are absent from `services.jar`. We take the `service*.jar` impls (not the
+        `framework-*.jar` interface stubs) so the analyzer sees the Stub subclasses.
+        """
+        jars = []
+        for path, meta in self._model.inodes.meta.items():
+            if (path.startswith("/apex/") and "/javalib/" in path
+                    and path.endswith(".jar") and not meta.is_dir
+                    and os.path.basename(path).startswith("service")):
+                jars.append(path)
+        return sorted(jars)
+
     def _framework(self):
         """Lazily build the FrameworkAnalyzer; returns (analyzer|None, reason).
 
-        Decompiles services.jar (the impls) and, if present, framework.jar (the
-        authoritative transaction codes). The decompile is cached by jar content, so
-        this slow step runs at most once per image across all framework findings.
+        Decompiles services.jar (the impls), every APEX `javalib` service jar (the
+        mainline-module impls that services.jar lacks), and, if present, framework.jar
+        (the authoritative transaction codes). One analyzer spans all of them. Each
+        decompile is cached by jar content, so this slow step runs at most once per
+        image across all framework findings.
         """
         if self._fw_tried:
             return self._fw_analyzer, self._fw_reason
@@ -386,6 +404,17 @@ class Attributor:
         except J.JadxError as e:
             self._fw_reason = str(e)
             return None, self._fw_reason
+        # APEX javalib service jars: decompile each (best-effort; a jar that fails to
+        # decompile is skipped with the others still contributing).
+        roots = [svc_src]
+        for dev in self._apex_javalib_jars():
+            host = self._extract(dev)
+            if not host:
+                continue
+            try:
+                roots.append(J.decompile_jar(host, cache_root))
+            except J.JadxError:
+                continue
         fw_src = None
         if "/system/framework/framework.jar" in self._model.inodes.meta:
             fw_host = self._extract("/system/framework/framework.jar")
@@ -394,7 +423,7 @@ class Attributor:
                     fw_src = J.decompile_jar(fw_host, cache_root)
                 except J.JadxError:
                     fw_src = None    # optional: fall back to method-level transactions
-        self._fw_analyzer = J.FrameworkAnalyzer(svc_src, fw_src)
+        self._fw_analyzer = J.FrameworkAnalyzer(roots, fw_src)
         return self._fw_analyzer, ""
 
     @staticmethod
@@ -459,12 +488,13 @@ class Attributor:
         total = sum(tot.values())
         verdict = ("open" if tot["ungated"] else
                    "gated" if tot["gated"] else "unresolved")
-        note = (f"{len(cods)} framework services hosted in system_server; {total} "
+        note = (f"{len(cods)} framework + mainline (APEX) services; {total} "
                 f"transactions: {tot['gated']} gated, {tot['ungated']} ungated "
                 f"(actionable), {tot['needs-review']} needs-review, "
                 f"{tot['not-attempted']} not-attempted. The ungated transactions are "
-                "directly reachable by any app that can bind system_server; see the "
-                "per-service service_manager findings for the method-level breakdown.")
+                "directly reachable by any app that can bind the hosting process; see "
+                "the per-service service_manager findings for the method-level "
+                "breakdown.")
         # Cap the embedded lists so the JSON stays sane; counts carry the full totals.
         txns = actionable[:200] + review[:100]
         return Attribution(

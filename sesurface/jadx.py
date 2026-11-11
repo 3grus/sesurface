@@ -242,8 +242,14 @@ class FrameworkAnalyzer:
                                     behind the single `system_server:binder` finding)
     """
 
-    def __init__(self, sources_dir: str, framework_dir: Optional[str] = None):
-        self._src = sources_dir
+    def __init__(self, sources_dir, framework_dir: Optional[str] = None):
+        # One analyzer can span several decompiled trees: services.jar plus the APEX
+        # `javalib` service jars (appsearch, tethering/connectivity, wifi, uwb, ...),
+        # whose impls register and enforce exactly like the in-tree ones. `sources_dir`
+        # may be a single path (back-compat) or a list of source roots.
+        self._srcs: list[str] = ([sources_dir] if isinstance(sources_dir, str)
+                                 else list(sources_dir))
+        self._src = self._srcs[0] if self._srcs else ""
         # Optional decompiled framework.jar: supplies the authoritative transaction
         # set (and numeric codes) per AIDL interface, which services.jar lacks.
         self._fw = framework_dir
@@ -259,10 +265,11 @@ class FrameworkAnalyzer:
     def _java_files(self) -> list[str]:
         if self._files is None:
             out: list[str] = []
-            for root, _dirs, files in os.walk(self._src):
-                for nm in files:
-                    if nm.endswith(".java"):
-                        out.append(os.path.join(root, nm))
+            for src in self._srcs:
+                for root, _dirs, files in os.walk(src):
+                    for nm in files:
+                        if nm.endswith(".java"):
+                            out.append(os.path.join(root, nm))
             self._files = out
         return self._files
 
@@ -273,6 +280,15 @@ class FrameworkAnalyzer:
                 return f.read()
         except OSError:
             return ""
+
+    def _relpath(self, path: str) -> str:
+        """Path relative to whichever source root contains it (for display)."""
+        best = path
+        for src in self._srcs:
+            r = _rel(src, path)
+            if not r.startswith("..") and len(r) < len(best):
+                best = r
+        return best
 
     # ---- authoritative transaction set (from framework.jar) --------------- #
 
@@ -386,7 +402,7 @@ class FrameworkAnalyzer:
         if res is None:
             path = self._registrations()[name][0]
             return ServiceCOD(service=name, interface="", impl_class="",
-                              impl_file=_rel(self._src, path),
+                              impl_file=self._relpath(path),
                               note="registered here but its `extends *.Stub` impl could "
                                    "not be resolved (impl in an unparsed unit, or a "
                                    "non-literal registration)")
@@ -565,7 +581,7 @@ class FrameworkAnalyzer:
         interface = res.interface
         cod = ServiceCOD(service=service, interface=interface,
                          impl_class=res.impl_class,
-                         impl_file=_rel(self._src, res.path))
+                         impl_file=self._relpath(res.path))
         file_methods = res.file_methods
         impl_methods = res.impl_methods
 

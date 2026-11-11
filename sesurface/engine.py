@@ -36,7 +36,7 @@ from .policy.policy import Policy
 from .subject import resolve_subject
 from .types import Finding, Subject
 
-_CACHE_VERSION = 4   # Bump when the cached structures change shape.
+_CACHE_VERSION = 5   # Bump when the cached structures change shape.
 
 
 @dataclass
@@ -105,6 +105,18 @@ def build_image_model(image_dir: str, work_dir: str,
     files = ImageFiles(parts)
     try:
         inodes = build_inode_index(parts, read_labels=read_labels)
+        # Mount APEX payloads (/apex/<pkg>/bin/*, /apex/<pkg>/javalib/*.jar) and index
+        # the boot ramdisk, so native daemons and APEX javalib services resolve. This
+        # adds partitions to `parts`; `files` is re-created below so its resolver sees
+        # the new /apex/* mounts.
+        from .model.apex import index_apex_partitions
+        from .model.ramdisk import index_ramdisk
+        parts.notes.extend(
+            index_apex_partitions(parts, files, inodes, work_dir,
+                                  read_labels=read_labels))
+        parts.notes.extend(index_ramdisk(image_dir, inodes))
+        files.close()
+        files = ImageFiles(parts)
         contexts = load_contexts(files, os.path.join(work_dir, "ctx"))
         assembled = assemble(files, work_dir)
         # init/ueventd enrichment: native-daemon identity + device-node DAC facts.
