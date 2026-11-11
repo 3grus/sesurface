@@ -97,6 +97,37 @@
   .sw-exposed { background: var(--exposed); } .sw-protected { background: var(--protected); }
   .sw-review { background: var(--review); } .sw-idle { background: var(--idle); }
 
+  /* ---- "where to start" guidance ---- */
+  .howto-link { font-size: 12.5px; white-space: nowrap; }
+  .startcard { background: var(--panel); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent); border-radius: 10px; padding: 12px 16px 14px;
+    margin-top: 10px; }
+  .startcard h2 { font-size: 13px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); }
+  .startcard ol { margin: 8px 0 0; padding-left: 20px; }
+  .startcard li { font-size: 13.5px; margin: 6px 0; line-height: 1.5; }
+  .startcard li b { font-variant-numeric: tabular-nums; }
+  .startcard .go { all: unset; cursor: pointer; color: var(--accent); font-weight: 600;
+    text-decoration: underline; text-underline-offset: 2px; }
+  .startcard .none { color: var(--protected); font-weight: 600; }
+
+  /* ---- how-to / glossary ---- */
+  details.howto { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; margin-top: 10px; }
+  details.howto > summary { cursor: pointer; padding: 11px 16px; font-size: 13px;
+    font-weight: 600; color: var(--fg); list-style: none; }
+  details.howto > summary::-webkit-details-marker { display: none; }
+  details.howto > summary::before { content: "▸ "; color: var(--faint); }
+  details.howto[open] > summary::before { content: "▾ "; }
+  .howto-body { padding: 0 16px 14px; font-size: 13px; color: var(--muted);
+    max-width: 82ch; }
+  .howto-body p { margin: 6px 0; }
+  ul.gloss { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 7px; }
+  ul.gloss li { display: flex; gap: 10px; align-items: baseline; }
+  ul.gloss .lab { font-weight: 700; flex: none; min-width: 148px; }
+  ul.gloss .tech { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+  .gnote { font-size: 12px; color: var(--faint); }
+
   /* ---- tabs ---- */
   nav.tabs { display: flex; gap: 2px; margin-top: 18px; border-bottom: 1px solid var(--line);
     position: sticky; top: env(safe-area-inset-top, 0px); background: var(--bg); z-index: 5;
@@ -191,6 +222,8 @@
   .ngroup h3 { font-size: 13px; font-weight: 600; display: flex; align-items: center;
     gap: 8px; margin-bottom: 8px; }
   .ngroup h3 .status { font-size: 11px; }
+  .ngroup-help { font-size: 12px; color: var(--muted); margin: -2px 0 9px;
+    max-width: 92ch; }
   .nrow { background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
     padding: 11px 13px; margin-bottom: 7px; }
   .nrow .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
@@ -245,21 +278,40 @@
     <div class="title-row">
       <h1>Reachable from <span class="dom mono" id="h-dom">—</span></h1>
     </div>
-    <p class="sub">Every object an SELinux subject can reach, and for each binder
-      service the per-transaction verdict: is a caller check enforced in code, or is
-      the transaction directly reachable? <b>Exposed</b> transactions are the audit
-      worklist.</p>
+    <p class="sub">What a compromised <b id="h-dom2">—</b> app could reach on this
+      device, and — for each system service it can call — whether the code on the
+      other side <b>checks the caller's permission first</b>. Calls that run
+      <b>without a check</b> are the ones worth auditing first. <a href="#" id="howto-open"
+      class="howto-link">How to read this ↓</a></p>
     <div class="meta" id="h-meta">—</div>
 
     <div class="summary" id="tiles"></div>
     <div class="meter-card">
       <div class="meter-head">
-        <h2>Framework transaction gates</h2>
-        <span class="hint">click a band to filter the services below</span>
+        <h2>Can an app call these system services without a permission check?</h2>
+        <span class="hint">click a band to filter the list below</span>
       </div>
       <div class="bar" id="gatebar"></div>
       <div class="legend" id="gatelegend"></div>
     </div>
+
+    <div class="startcard" id="startcard">
+      <h2>Where to start</h2>
+      <ol id="startlist"></ol>
+    </div>
+
+    <details class="howto" id="howto">
+      <summary>How to read this — plain-language guide</summary>
+      <div class="howto-body">
+        <p>This app runs sandboxed, but it can still <em>call</em> many services and
+          devices. Each call lands in handler code that may or may not re-check who is
+          calling. This page sorts those calls by how well they're defended:</p>
+        <ul class="gloss" id="glosslist"></ul>
+        <p class="gnote">The colored words above are the plain-language labels used
+          throughout the page; the smaller grey word in brackets is the exact technical
+          term (for anyone cross-referencing AOSP/SELinux docs).</p>
+      </div>
+    </details>
 
     <nav class="tabs" id="tabs">
       <button data-tab="framework" aria-selected="true">Framework services
@@ -282,10 +334,14 @@
       </label>
       <div class="chips" id="chips">
         <button class="chip f-all" data-f="all" aria-pressed="true">All</button>
-        <button class="chip f-ungated" data-f="ungated" aria-pressed="false">Exposed</button>
-        <button class="chip f-review" data-f="needs-review" aria-pressed="false">Review</button>
-        <button class="chip f-gated" data-f="gated" aria-pressed="false">Gated</button>
-        <button class="chip f-idle" data-f="not-attempted" aria-pressed="false">Not&nbsp;attempted</button>
+        <button class="chip f-ungated" data-f="ungated" aria-pressed="false"
+          title="ungated — handler runs without checking the caller">Open&nbsp;to&nbsp;any&nbsp;app</button>
+        <button class="chip f-review" data-f="needs-review" aria-pressed="false"
+          title="needs-review — a check may exist but we couldn't confirm it guards this call">Needs&nbsp;a&nbsp;look</button>
+        <button class="chip f-gated" data-f="gated" aria-pressed="false"
+          title="gated — handler verifies the caller's permission/UID first">Permission-checked</button>
+        <button class="chip f-idle" data-f="not-attempted" aria-pressed="false"
+          title="not-attempted — the tool did not analyze this call">Not&nbsp;analyzed</button>
       </div>
       <select class="sort" id="sort">
         <option value="exposed">Sort: most exposed</option>
@@ -299,22 +355,26 @@
 
   <!-- NATIVE -->
   <section id="tab-native" hidden>
-    <p class="section-intro">Non-framework targets — native binder/socket servers,
-      HIDL HALs and device-ioctl surface — resolved by the ELF-symbol scan and ioctl
-      decode. Grouped by verdict.</p>
+    <p class="section-intro">Lower-level targets this app can reach that aren't Java
+      system services: native daemons (C/C++ servers reached over Binder or a socket),
+      hardware services (HALs), and direct device-driver access. We inspect each
+      server's compiled code for a caller check. Grouped below by what we found — the
+      <b>open</b> and <b>couldn't-locate</b> groups are where to look first.</p>
     <div id="natlist"></div>
   </section>
 
   <!-- SURFACE -->
   <section id="tab-surface" hidden>
-    <p class="section-intro">The full reachable object surface by SELinux class, with
-      the in-code (COD) gate decision tallied per class. Most classes are decided by
-      policy + DAC; only binder/socket/service carry an in-code question.</p>
+    <p class="section-intro">The complete list of what this app can reach, grouped by
+      kind of object (files, sockets, services, devices…). The bar shows, per kind,
+      whether there's a <b>second permission check in the code</b> behind the object.
+      Most files/devices are governed by the sandbox policy alone; only
+      services and sockets have handler code that can add a check.</p>
     <div class="cod-key">
-      <span><i class="cod-allow"></i>allow (reachable)</span>
-      <span><i class="cod-unknown"></i>unknown / explained</span>
-      <span><i class="cod-deny"></i>deny</span>
-      <span><i class="cod-na"></i>n/a</span>
+      <span><i class="cod-allow"></i>reachable, no code check</span>
+      <span><i class="cod-unknown"></i>check present / undecided</span>
+      <span><i class="cod-deny"></i>blocked in code</span>
+      <span><i class="cod-na"></i>not applicable</span>
     </div>
     <div style="overflow-x:auto"><table class="surf" id="surftab"></table></div>
   </section>
@@ -331,26 +391,34 @@
   const el = (t, c, txt) => { const e = document.createElement(t); if (c) e.className = c;
     if (txt != null) e.textContent = txt; return e; };
   const fmt = n => n.toLocaleString("en-US");
+  // key, swatch-class, plain label, css-var, short label, technical term, one-line help
   const STK = [
-    ["ungated", "exposed", "Exposed", "--exposed"],
-    ["gated", "protected", "Gated", "--protected"],
-    ["needs-review", "review", "Review", "--review"],
-    ["not-attempted", "idle", "Not attempted", "--idle"],
+    ["ungated", "exposed", "Open to any app", "--exposed", "open", "ungated",
+      "The handler runs without checking who is calling — any app that can reach it gets through. Audit these first."],
+    ["gated", "protected", "Permission-checked", "--protected", "checked", "gated",
+      "The handler verifies the caller's permission or UID before acting."],
+    ["needs-review", "review", "Needs a look", "--review", "unsure", "needs-review",
+      "A check might exist behind code we couldn't fully follow; treated as reachable until a human confirms."],
+    ["not-attempted", "idle", "Not analyzed", "--idle", "skipped", "not-attempted",
+      "The tool did not analyze this call (e.g. the implementing method wasn't found)."],
   ];
+  const PLAIN = Object.fromEntries(STK.map(r => [r[0], r[2]]));
+  const SHORT = Object.fromEntries(STK.map(r => [r[0], r[4]]));
   const stClass = s => "st-" + s.replace(/-/g, "");
 
   // ---- header ----
   $("#h-dom").textContent = DATA.source;
+  const h2 = $("#h-dom2"); if (h2) h2.textContent = DATA.source;
   $("#h-meta").textContent = `${DATA.image}  ·  generated ${DATA.generated}  ·  `
     + `${fmt(DATA.totals.reached_domains)} reachable domains via exec-transition`;
   const fw = DATA.framework, T = fw.totals;
   const txnTotal = STK.reduce((a, [k]) => a + (T[k] || 0), 0);
 
   const tiles = [
-    ["Reachable objects", fmt(DATA.totals.findings), "across " + DATA.classes.length + " classes"],
-    ["Framework services", fmt(fw.n_services), "hosted in system_server"],
-    ["Transactions read", fmt(txnTotal), "per-method verdicts"],
-    ["Exposed", fmt(T.ungated), "directly reachable", "exposed"],
+    ["Things it can reach", fmt(DATA.totals.findings), "files, services, sockets, devices"],
+    ["System services", fmt(fw.n_services), "it can call by name"],
+    ["Service calls checked", fmt(txnTotal), "individual methods analyzed"],
+    ["Open to any app", fmt(T.ungated), "no caller check — the worklist", "exposed"],
   ];
   const tilesEl = $("#tiles");
   tiles.forEach(([k, v, note, tone]) => {
@@ -375,6 +443,81 @@
     b.addEventListener("click", () => setFilter(state.filter === k ? "all" : k));
     leg.append(b);
   });
+
+  // ---- glossary ----
+  const glossEl = $("#glosslist");
+  STK.forEach(([k, sw, label, varn, short, tech, help]) => {
+    const li = el("li");
+    const lab = el("span", "lab", label); lab.style.color = `var(${varn})`;
+    li.append(lab, el("span", "tech", `[${tech}]`),
+      document.createTextNode(" " + help));
+    glossEl.append(li);
+  });
+  $("#howto-open").addEventListener("click", e => {
+    e.preventDefault(); const d = $("#howto"); d.open = true;
+    d.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  // ---- "where to start" (data-driven reading order) ----
+  (function buildStart() {
+    const ol = $("#startlist"); const items = [];
+    const goTab = (tab, filter) => () => {
+      activateTab(tab);
+      if (tab === "framework" && filter) setFilter(filter);
+      $("#tab-" + tab).scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    const link = (txt, fn) => { const b = el("button", "go", txt);
+      b.addEventListener("click", fn); return b; };
+
+    // 1. Framework calls open to any app, with the worst offenders named.
+    const openSvcs = fw.services.filter(s => (s.counts.ungated || 0) > 0)
+      .sort((a, b) => (b.counts.ungated || 0) - (a.counts.ungated || 0));
+    if (T.ungated > 0) {
+      const li = el("li");
+      li.append(Object.assign(el("b"), { textContent: fmt(T.ungated) }),
+        document.createTextNode(` system-service call${T.ungated === 1 ? "" : "s"} run with no permission check `));
+      li.append(link("— open the list →", goTab("framework", "ungated")));
+      if (openSvcs.length) {
+        const names = openSvcs.slice(0, 4)
+          .map(s => `${s.service} (${s.counts.ungated})`).join(", ");
+        li.append(Object.assign(el("div"), { textContent: "Most exposed: " + names,
+          style: "font-size:12px;color:var(--faint);margin-top:2px" }));
+      }
+      items.push(li);
+    }
+    // 2. Native servers with no caller check.
+    const natOpen = DATA.native.filter(n => n.attribution === "open");
+    if (natOpen.length) {
+      const li = el("li");
+      li.append(Object.assign(el("b"), { textContent: fmt(natOpen.length) }),
+        document.createTextNode(` native server${natOpen.length === 1 ? "" : "s"} accept callers without re-checking them `));
+      li.append(link("— see them →", goTab("native")));
+      items.push(li);
+    }
+    // 3. Couldn't-locate gaps (where the analysis itself needs more input).
+    const natUnres = DATA.native.filter(n => n.attribution === "unresolved");
+    if (natUnres.length) {
+      const li = el("li");
+      li.append(Object.assign(el("b"), { textContent: fmt(natUnres.length) }),
+        document.createTextNode(` target${natUnres.length === 1 ? "" : "s"} couldn't be traced to code — gaps to chase, not safe results `));
+      li.append(link("— see them →", goTab("native")));
+      items.push(li);
+    }
+    // 4. Uncertain framework calls a human should confirm.
+    if (T["needs-review"] > 0) {
+      const li = el("li");
+      li.append(Object.assign(el("b"), { textContent: fmt(T["needs-review"]) }),
+        document.createTextNode(` service call${T["needs-review"] === 1 ? "" : "s"} need a human look (a check may exist but we couldn't confirm it) `));
+      li.append(link("— filter to them →", goTab("framework", "needs-review")));
+      items.push(li);
+    }
+    if (!items.length) {
+      const li = el("li"); li.append(Object.assign(el("span", "none"),
+        { textContent: "No open calls found — every reachable service call is permission-checked on this image." }));
+      items.push(li);
+    }
+    items.forEach(li => ol.append(li));
+  })();
 
   // ---- tab counts ----
   $("#tc-fw").textContent = fw.n_services;
@@ -401,9 +544,9 @@
       const s = el("span", "sw-" + sw); s.style.width = (n / total * 100) + "%"; b.append(s); });
     const wrap = el("div", "mini"); wrap.append(b);
     const nums = el("div", "nums");
-    STK.forEach(([k, sw, label]) => { const n = counts[k] || 0; if (!n) return;
-      const sp = el("span"); const bb = el("b", null, fmt(n));
-      bb.style.color = `var(--${sw})`; sp.append(bb, document.createTextNode(" " + label.toLowerCase()));
+    STK.forEach(([k, sw, label, varn, short]) => { const n = counts[k] || 0; if (!n) return;
+      const sp = el("span"); sp.title = label; const bb = el("b", null, fmt(n));
+      bb.style.color = `var(--${sw})`; sp.append(bb, document.createTextNode(" " + short));
       nums.append(sp); });
     wrap.append(nums); return wrap;
   }
@@ -423,7 +566,7 @@
 
     const totalExposed = svcs.reduce((a, s) => a + (s.counts.ungated || 0), 0);
     $("#fw-result").innerHTML = `<b>${svcs.length}</b> service${svcs.length === 1 ? "" : "s"} `
-      + `· <b>${fmt(totalExposed)}</b> exposed transaction${totalExposed === 1 ? "" : "s"} shown`
+      + `· <b>${fmt(totalExposed)}</b> open call${totalExposed === 1 ? "" : "s"} shown`
       + (state.filter !== "all" || state.q ? " (filtered)" : "");
 
     if (!svcs.length) { list.append(Object.assign(el("div", "empty"),
@@ -450,7 +593,7 @@
       const metrics = el("div", "svc-metrics");
       metrics.append(miniBar(s.counts));
       const ex = el("div", "expct" + (exposed ? "" : " zero"));
-      ex.append(document.createTextNode(fmt(exposed)), Object.assign(el("small"), { textContent: "exposed" }));
+      ex.append(document.createTextNode(fmt(exposed)), Object.assign(el("small"), { textContent: "open" }));
       metrics.append(ex);
       head.append(metrics);
       card.append(head);
@@ -491,18 +634,30 @@
       m.append(Object.assign(el("div", "via"), { textContent: "via " + tx.via }));
     r.append(m);
     const st = el("div", "st");
-    const label = { "ungated": "exposed", "gated": "gated", "needs-review": "review",
-      "not-attempted": "not attempted" }[tx.status] || tx.status;
-    st.append(Object.assign(el("span", "status " + stClass(tx.status)), { textContent: label }));
+    const badge = el("span", "status " + stClass(tx.status));
+    badge.textContent = PLAIN[tx.status] || tx.status;
+    const hs = STK.find(r => r[0] === tx.status); if (hs) badge.title = hs[6];
+    st.append(badge);
     r.append(st);
     return r;
   }
 
   // ---- native ----
-  const NAT_ORDER = ["open", "gated", "unresolved", "kernel", "aggregate", "latent"];
-  const NAT_LABEL = { open: "Open — surface confirmed", gated: "Gated — caller check present",
-    unresolved: "Unresolved — no binary located", kernel: "Kernel ioctl surface",
-    aggregate: "Aggregate — multi-member attribute", latent: "Latent — nothing on this image" };
+  const NAT_ORDER = ["open", "unresolved", "gated", "kernel", "aggregate", "latent"];
+  const NAT_LABEL = {
+    open: "Open — the server does not re-check the caller",
+    gated: "Checks the caller — a permission/UID/peer check is present",
+    unresolved: "Couldn't locate the code — a gap to chase (not a verdict)",
+    kernel: "Direct device-driver (kernel) access",
+    aggregate: "Covers a group of domains — see their own rows",
+    latent: "Not present on this image — nothing provides it" };
+  const NAT_HELP = {
+    open: "The compiled server has no caller-check symbols; if an app can reach it, it gets through. Audit these.",
+    gated: "The server references caller-identity/permission checks before acting.",
+    unresolved: "We couldn't find the server binary to inspect (e.g. it isn't shipped on this image). The code question is simply undecided — not evidence of 'no check'.",
+    kernel: "Reaches a device driver directly; the kernel, not a userspace handler, decides access. The decoded ioctl commands are the attack surface.",
+    aggregate: "The target is an SELinux attribute standing for many domains; it's as reachable as its weakest member.",
+    latent: "No process or library on this image provides this; the policy entry is unused here." };
   const NAT_ST = { open: "ungated", gated: "gated", unresolved: "needs-review",
     kernel: "not-attempted", aggregate: "needs-review", latent: "not-attempted" };
   function renderNative() {
@@ -513,10 +668,14 @@
     order.forEach(k => {
       const g = groups[k]; const sec = el("div", "ngroup");
       const h = el("h3");
+      const badge = { open: "open", gated: "checked", unresolved: "code not found",
+        kernel: "kernel", aggregate: "group", latent: "not present" }[k] || k;
       h.append(Object.assign(el("span", "status " + stClass(NAT_ST[k] || "not-attempted")),
-        { textContent: k }));
+        { textContent: badge }));
       h.append(document.createTextNode((NAT_LABEL[k] || k) + " · " + g.length));
       sec.append(h);
+      if (NAT_HELP[k]) sec.append(Object.assign(el("div", "ngroup-help"),
+        { textContent: NAT_HELP[k] }));
       g.sort((a, b) => a.setype.localeCompare(b.setype)).forEach(n => {
         const row = el("div", "nrow");
         const top = el("div", "top");
@@ -542,7 +701,7 @@
   function renderSurface() {
     const t = $("#surftab"); t.innerHTML = "";
     const thead = el("tr");
-    ["Class", "Reachable", "In-code gate (COD)", ""].forEach(h => thead.append(Object.assign(el("th"), { textContent: h })));
+    ["Kind of object", "Count", "Code-level permission check", ""].forEach(h => thead.append(Object.assign(el("th"), { textContent: h })));
     t.append(thead);
     const COD = [["allow", "cod-allow"], ["unknown", "cod-unknown"], ["deny", "cod-deny"],
       ["n/a", "cod-na"]];
@@ -577,13 +736,17 @@
   $("#q").addEventListener("input", e => { clearTimeout(qt);
     qt = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); renderFramework(); }, 90); });
 
+  function activateTab(tab) {
+    state.tab = tab;
+    $$("#tabs button").forEach(b => b.setAttribute("aria-selected",
+      String(b.dataset.tab === tab)));
+    ["framework", "native", "surface"].forEach(t => $("#tab-" + t).hidden = t !== tab);
+    if (tab === "native" && !$("#natlist").children.length) renderNative();
+    if (tab === "surface" && !$("#surftab").children.length) renderSurface();
+  }
   $("#tabs").addEventListener("click", e => {
     const btn = e.target.closest("button[data-tab]"); if (!btn) return;
-    state.tab = btn.dataset.tab;
-    $$("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b === btn)));
-    ["framework", "native", "surface"].forEach(t => $("#tab-" + t).hidden = t !== state.tab);
-    if (state.tab === "native" && !$("#natlist").children.length) renderNative();
-    if (state.tab === "surface" && !$("#surftab").children.length) renderSurface();
+    activateTab(btn.dataset.tab);
   });
 
   $("#foot").textContent = `sesurface · ${DATA.source} · ${fmt(DATA.totals.findings)} findings · `
