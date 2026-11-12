@@ -275,6 +275,78 @@ def _cmd_attribute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    """Classify every image file in a directory and say how sesurface ingests it.
+
+    The point of the separated-image question: filesystem partitions are read IN PLACE
+    (never extracted to a tree, to preserve DAC ground truth); only *container* images
+    (sparse wrappers, super, boot) are expanded into the pieces the in-place readers
+    consume. This shows which is which for a given image set.
+    """
+    from .model.partitions import (_has_lp_geometry, _parse_gpt, _sniff_fs,
+                                   _EROFS_MAGIC, _EXT_MAGIC)
+    from .model.sparse import is_sparse
+    from .model.bootimg import parse_boot_image
+
+    d = args.dir
+    if not os.path.isdir(d):
+        print(f"error: not a directory: {d}", file=sys.stderr)
+        return 1
+    files = sorted(f for f in os.listdir(d)
+                   if f.endswith((".img", ".bin")) or f.startswith(("kernel", "Image")))
+    if not files:
+        print(f"no image files (*.img, kernel*, Image*) in {d}", file=sys.stderr)
+        return 1
+    print(f"image set in {d}:\n")
+    for name in files:
+        path = os.path.join(d, name)
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                head = f.read(64 * 1024)
+        except OSError:
+            continue
+        kind, how = _classify_image(path, name, head, is_sparse, parse_boot_image,
+                                    _parse_gpt, _has_lp_geometry, _sniff_fs,
+                                    _EROFS_MAGIC, _EXT_MAGIC)
+        print(f"  {name:22s} {size/1e6:8.1f} MB  {kind}")
+        print(f"  {'':22s} {'':11s}  -> {how}")
+    print("\nFilesystem partitions are read in place (DAC-preserving); container images "
+          "(sparse/super/boot)\nare expanded into kernel / ramdisk / logical partitions "
+          "that the in-place readers consume.")
+    return 0
+
+
+def _classify_image(path, name, head, is_sparse, parse_boot_image, parse_gpt,
+                    has_lp, sniff_fs, erofs_magic, ext_magic):
+    if is_sparse(path):
+        return "Android sparse", "expand to raw, then read the filesystem in place"
+    if head[:8] in (b"ANDROID!", b"VNDRBOOT"):
+        bi = parse_boot_image(head + b"\x00" * 4096)  # header is within the first bytes
+        parts = []
+        if bi and bi.kernel is not None:
+            parts.append("kernel")
+        if bi and bi.ramdisk is not None:
+            parts.append("ramdisk")
+        v = f" v{bi.header_version}" if bi else ""
+        return (f"Android boot image{v}",
+                "unpack " + (" + ".join(parts) or "contents")
+                + " (kernel -> kallsyms, ramdisk -> cpio index)")
+    if len(head) >= 0x404 and head[0x400:0x404] == erofs_magic:
+        return "EROFS filesystem", "read in place (metadata + xattrs via the EROFS reader)"
+    if len(head) >= 0x43A and head[0x438:0x43A] == ext_magic:
+        return "ext4 filesystem", "read in place (metadata + xattrs via debugfs)"
+    if has_lp(path, 0):
+        return "super (liblp)", "parse into dynamic/logical partitions, each read in place"
+    if parse_gpt(path):
+        return "GPT disk", "parse the partition table, then classify each partition"
+    if head[:4] == b"\x02\x21\x4c\x18" or head[:2] == b"\x1f\x8b" or head[:6] == b"070701":
+        return "cpio ramdisk", "decompress + index its entries at the device root"
+    if b"Linux version" in head or name.startswith(("kernel", "Image", "vmlinux")):
+        return "kernel image", "kallsyms enrichment (run `sesurface kallsyms` to self-check)"
+    return "unrecognised", "skipped (not a filesystem/container sesurface reads)"
+
+
 def _cmd_kallsyms(args: argparse.Namespace) -> int:
     """Self-check the kernel-symbol enrichment against a kernel image.
 
@@ -397,6 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
     ks.add_argument("symbols", nargs="*",
                     help="symbols to probe (default: common driver ioctl handlers)")
     ks.set_defaults(func=_cmd_kallsyms)
+
+    ins = sub.add_parser("inspect",
+                         help="classify the image files in a directory and show how "
+                              "each is ingested (filesystem in-place vs container unpack)")
+    ins.add_argument("dir", help="directory holding the partition/boot images")
+    ins.set_defaults(func=_cmd_inspect)
 
     return ap
 

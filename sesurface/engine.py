@@ -135,8 +135,10 @@ def build_image_model(image_dir: str, work_dir: str,
         files.close()
 
     # Kernel image + loadable modules, so a device-ioctl pivot can name where the
-    # driver code lives (built into the kernel binary, or a specific .ko).
-    kernel = build_kernel_artifacts(image_dir, inodes)
+    # driver code lives (built into the kernel binary, or a specific .ko). On a device
+    # image the kernel is unpacked from boot.img into the work dir.
+    kernel = build_kernel_artifacts(image_dir, inodes,
+                                    work_dir=os.path.join(work_dir, "boot"))
 
     model = ImageModel(image_dir=image_dir, work_dir=work_dir, fingerprint=fp,
                        partitions=parts, inodes=inodes, contexts=contexts,

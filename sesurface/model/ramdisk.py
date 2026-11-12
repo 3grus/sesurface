@@ -102,6 +102,17 @@ def _iter_cpio_newc(blob: bytes):
         yield (name, mode, uid, gid, data)
 
 
+def _ramdisk_from_boot(boot_path: str) -> Optional[bytes]:
+    """The (compressed) ramdisk cpio embedded in a boot/vendor_boot image, or None."""
+    from .bootimg import parse_boot_image
+    try:
+        with open(boot_path, "rb") as f:
+            bi = parse_boot_image(f.read())
+    except OSError:
+        return None
+    return bi.ramdisk if bi is not None else None
+
+
 def index_ramdisk(image_dir: str, idx: InodeIndex) -> list[str]:
     """Parse every ramdisk image in `image_dir` and merge its entries into `idx`.
 
@@ -110,17 +121,26 @@ def index_ramdisk(image_dir: str, idx: InodeIndex) -> list[str]:
     """
     notes: list[str] = []
     try:
-        names = [f for f in os.listdir(image_dir)
-                 if f.endswith(".img") and ("ramdisk" in f or f == "boot.img")]
+        all_imgs = os.listdir(image_dir)
     except OSError:
         return notes
-    for fname in sorted(names):
-        path = os.path.join(image_dir, fname)
+    # Standalone ramdisk images, plus the ramdisks embedded in boot containers.
+    rd_names = [f for f in all_imgs if f.endswith(".img") and "ramdisk" in f]
+    boot_names = [f for f in all_imgs
+                  if f in ("boot.img", "init_boot.img", "vendor_boot.img")]
+    sources: list[tuple[str, bytes]] = []
+    for fname in sorted(rd_names):
         try:
-            with open(path, "rb") as f:
-                raw = f.read()
+            with open(os.path.join(image_dir, fname), "rb") as f:
+                sources.append((fname, f.read()))
         except OSError:
             continue
+    for fname in sorted(boot_names):
+        blob = _ramdisk_from_boot(os.path.join(image_dir, fname))
+        if blob is not None:
+            sources.append((f"{fname}:ramdisk", blob))
+
+    for fname, raw in sources:
         cpio = _decompress(raw)
         if cpio is None:
             notes.append(f"ramdisk: {fname} is not a recognised cpio/gzip/lz4 image")

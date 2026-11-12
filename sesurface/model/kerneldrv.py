@@ -213,19 +213,25 @@ def _defined_symbols(ko_host: str) -> list[str]:
 _KVER_RE = re.compile(rb"(\d+\.\d+\.\d+[-\w.]*-android[-\w.]*)")
 
 
-def build_kernel_artifacts(image_dir: str, inodes) -> KernelArtifacts:
-    """Find the kernel image + loadable modules for an unpacked image."""
+def build_kernel_artifacts(image_dir: str, inodes, work_dir: Optional[str] = None) -> KernelArtifacts:
+    """Find the kernel image + loadable modules for an unpacked image.
+
+    Prefers a standalone `kernel*`/`Image` file; otherwise unpacks `boot.img` (the
+    kernel lives inside the Android boot container) into `work_dir` and uses that.
+    """
     ka = KernelArtifacts()
-    # Kernel image: a `kernel*` file in the image dir (emulator ships `kernel-ranchu`),
-    # or a `boot.img` (the kernel is embedded; we still name the file to open).
     try:
         names = os.listdir(image_dir)
     except OSError:
         names = []
-    cand = [n for n in names if n.startswith("kernel")] or \
-           [n for n in names if n in ("boot.img", "Image", "Image.gz")]
-    if cand:
-        path = os.path.join(image_dir, sorted(cand)[0])
+    path = None
+    standalone = [n for n in names if n.startswith("kernel")] or \
+        [n for n in names if n in ("Image", "Image.gz", "Image.lz4", "vmlinux")]
+    if standalone:
+        path = os.path.join(image_dir, sorted(standalone)[0])
+    elif "boot.img" in names and work_dir:
+        path = _kernel_from_boot(os.path.join(image_dir, "boot.img"), work_dir)
+    if path and os.path.exists(path):
         ka.kernel_image = path
         try:
             with open(path, "rb") as f:
@@ -238,3 +244,22 @@ def build_kernel_artifacts(image_dir: str, inodes) -> KernelArtifacts:
     ka.modules = sorted(p for p, meta in inodes.meta.items()
                         if p.endswith(".ko") and not meta.is_dir)
     return ka
+
+
+def _kernel_from_boot(boot_path: str, work_dir: str) -> Optional[str]:
+    """Extract the kernel from a boot.img into `work_dir` (cached); return its path."""
+    from .bootimg import parse_boot_image
+    out = os.path.join(work_dir, "kernel-from-boot.bin")
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        return out
+    try:
+        with open(boot_path, "rb") as f:
+            bi = parse_boot_image(f.read())
+    except OSError:
+        return None
+    if bi is None or not bi.kernel:
+        return None
+    os.makedirs(work_dir, exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(bi.kernel)
+    return out

@@ -25,6 +25,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .sparse import desparse, is_sparse
 from .superimg import parse_super
 
 # Partition name -> on-device mountpoint. Names come from GPT/liblp; mountpoints are
@@ -163,6 +164,18 @@ def build_partition_set(image_dir: str, work_dir: str) -> PartitionSet:
     imgs = sorted(f for f in os.listdir(image_dir) if f.endswith(".img"))
     for img in imgs:
         path = os.path.join(image_dir, img)
+        # Normalise an Android sparse image to raw first (it is not a readable
+        # filesystem until expanded). The raw output is still read in place, so DAC
+        # ground truth is preserved. Boot/ramdisk images are handled elsewhere.
+        if img[:-4] not in ("boot", "vendor_boot", "init_boot", "ramdisk") \
+                and is_sparse(path):
+            raw = os.path.join(work_dir, f"{img[:-4]}.raw.img")
+            if desparse(path, raw):
+                path = raw
+                ps.notes.append(f"expanded sparse image {img} -> {os.path.basename(raw)}")
+            else:
+                ps.notes.append(f"sparse image {img} could not be expanded; skipped")
+                continue
         gpt = _parse_gpt(path)
         # Candidate (name, offset, size) regions to interpret as super or filesystem.
         regions = gpt if gpt else [(img[:-4], 0, os.path.getsize(path))]
