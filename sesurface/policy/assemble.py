@@ -173,6 +173,52 @@ _CIL_INPUTS = [
 ]
 
 
+def _no_inputs_diagnostic(files: ImageFiles, vers: str, reasons: list[str]) -> str:
+    """A self-diagnosing message for 'no policy inputs found': probe where it is."""
+    # Is each partition even readable? A canonical file per partition.
+    part_probe = {
+        "system": "/system/build.prop",
+        "vendor": "/vendor/build.prop",
+        "system_ext": "/system_ext/etc/build.prop",
+        "product": "/product/etc/build.prop",
+        "odm": "/odm/etc/build.prop",
+    }
+    readable = [p for p, probe in part_probe.items() if files.exists(probe)]
+    # Candidate policy locations across layouts (Treble split CIL, monolithic, GSI).
+    policy_probe = [
+        "/system/etc/selinux/plat_sepolicy.cil",
+        "/system/etc/selinux/plat_sepolicy_vers.txt",
+        "/vendor/etc/selinux/precompiled_sepolicy",
+        "/odm/etc/selinux/precompiled_sepolicy",
+        "/sepolicy",                               # monolithic (pre-Treble / recovery)
+        "/system/etc/selinux/mapping/" + (vers or "33") + ".cil",
+    ]
+    seen = [p for p in policy_probe if files.exists(p)]
+    lines = ["No SELinux policy could be assembled for this image.",
+             "  precompiled: " + "; ".join(reasons),
+             "  partitions readable: " + (", ".join(readable) or "NONE"),
+             "  policy files visible: " + (", ".join(seen) or "NONE")]
+    if not readable:
+        lines.append(
+            "  => No partition read at all. Either -r points at the wrong directory, or "
+            "the\n     images did not ingest (sparse that could not expand, an "
+            "unreadable filesystem,\n     or an unparsed super.img). Run "
+            "`sesurface inspect <dir>` and `build-image` and\n     read the `note:` "
+            "lines.")
+    elif not seen:
+        lines.append(
+            "  => Partitions read, but no policy at the standard paths. This image may "
+            "use a\n     different layout (e.g. a monolithic /sepolicy, a recovery "
+            "image, or a system-only\n     GSI with no vendor policy). Tell me which "
+            "partitions you have and I can add the path.")
+    else:
+        lines.append(
+            "  => Policy files ARE visible but were not picked up -- likely a version/"
+            "mapping\n     mismatch (plat_sepolicy_vers.txt = "
+            + (vers or "<missing>") + "). Share the list above.")
+    return "\n".join(lines)
+
+
 def _compile(files: ImageFiles, work_dir: str, identity: BuildIdentity,
              reasons: list[str]) -> AssembledPolicy:
     """Compile the policy from split CIL with secilc, as first-stage init does.
@@ -197,16 +243,7 @@ def _compile(files: ImageFiles, work_dir: str, identity: BuildIdentity,
 
     out = os.path.join(work_dir, "sepolicy")
     if not inputs:
-        raise PolicyAssemblyError(
-            "No SELinux policy could be assembled for this image.\n"
-            "  - No usable precompiled_sepolicy (" + "; ".join(reasons) + ").\n"
-            "  - No split-CIL inputs were found either (looked for "
-            "plat_sepolicy.cil + mapping/" + (vers or "<version>") + ".cil on system/"
-            "system_ext/product/vendor/odm).\n"
-            "  Likely causes: a partition did not read (check `build-image` notes for "
-            "'unreadable filesystem' / 'could not be expanded'), the policy lives at a "
-            "non-standard path, or plat_sepolicy_vers.txt is missing so the mapping "
-            "files were skipped.")
+        raise PolicyAssemblyError(_no_inputs_diagnostic(files, vers, reasons))
     try:
         proc = subprocess.run(["secilc", "-m", "-M", "true", "-G", "-N", "-c", "30",
                                *inputs, "-o", out, "-f", "/dev/null"],

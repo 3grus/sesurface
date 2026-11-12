@@ -24,6 +24,8 @@ def test_assemble_raises_clear_error_when_nothing_found(tmp_path):
     with pytest.raises(PolicyAssemblyError) as ei:
         assemble(_NoPolicyFiles(), str(tmp_path))
     msg = str(ei.value)
-    # The message must be actionable, not a bare path.
+    # The message must be actionable and self-diagnosing, not a bare path.
     assert "No SELinux policy could be assembled" in msg
-    assert "precompiled" in msg and "CIL" in msg
+    assert "partitions readable" in msg and "policy files visible" in msg
+    # With a files stub that reads nothing, it points at the ingest/-r cause.
+    assert "No partition read at all" in msg
