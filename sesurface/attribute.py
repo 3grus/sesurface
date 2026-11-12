@@ -551,7 +551,7 @@ class Attributor:
             return self._attr_service_manager(f)
         if tclass in ("hwservice_manager",):
             return self._attr_hwservice(f)
-        if tclass in ("chr_file", "blk_file") and f.xperms:
+        if tclass in ("chr_file", "blk_file") and ("ioctl" in f.perms or f.xperms):
             return self._attr_ioctl(f)
         return Attribution(f.setype, tclass, "skipped",
                            notes="class carries no in-code gate (decided by TE+DAC)")
@@ -743,22 +743,44 @@ class Attributor:
     # ---- device ioctl (kernel) ------------------------------------------- #
 
     def _attr_ioctl(self, f: Finding) -> Attribution:
-        decoded = decode_ioctls(f.xperms)
-        handler = decoded[0][1] if decoded else "(driver ioctl)"
+        from .model import kerneldrv as K
+        drv = K.driver_for_type(f.setype)
+        # Decode the allowed command set, naming each via the driver's table.
         lines = []
-        for cmd, _h, name in decoded:
-            hot = " (hot)" if name in _HOT_IOCTLS else ""
-            lines.append(f"0x{cmd:04x} {name}{hot}")
-        dev_art = next((r.artifact for r in f.code_refs if r.tool == "kernel"),
-                       f.setype)
+        hot = False
+        for tok in f.xperms:
+            for cmd in _expand_xperm(tok):
+                name = K.command_name(cmd, drv) or f"(cmd 0x{cmd:04x})"
+                if name in _HOT_IOCTLS or "BINDER_WRITE_READ" in name:
+                    hot = True
+                lines.append(f"0x{cmd:04x} {name}" + (" (hot)" if name in _HOT_IOCTLS else ""))
+        if drv is not None:
+            handler = f"{drv.handler}  [{drv.driver}]"
+            # Resolve where that driver code physically lives (kernel image vs .ko).
+            artifact, where = self._model.kernel.locate_handler(drv.handler, self._files)
+            src = f" Source: {drv.source}." if drv.source else ""
+            notes = (f"ioctl reaches the {drv.driver} driver; its handler is "
+                     f"`{drv.handler}`.{src} {where}")
+        else:
+            handler = "(unrecognised driver ioctl)"
+            artifact = self._model.kernel.kernel_image or f.setype
+            ver = (f" ({self._model.kernel.kernel_version})"
+                   if self._model.kernel.kernel_version else "")
+            notes = (f"ioctl on {f.setype}; this device type is not in the driver map. "
+                     f"The handler is in the kernel image{ver} (find the char-dev's "
+                     "file_operations.unlocked_ioctl in a vmlinux/Ghidra pass).")
+        if not lines:
+            # No allowxperm whitelist means the policy permits EVERY ioctl command on
+            # this node -- the widest possible kernel surface, not the narrowest.
+            notes += (" No allowxperm whitelist: ALL ioctl commands on this node are "
+                      "reachable (the full driver ioctl surface).")
+        if hot:
+            notes += " BINDER_WRITE_READ drives the whole transaction engine."
         return Attribution(
-            f.setype, f.tclass, "kernel", handler=handler, artifact=dev_art,
+            f.setype, f.tclass, "kernel", handler=handler, artifact=artifact,
             tool="kernel", caller_check="n/a", ioctls=lines, method="ioctl-decode",
             confidence="high",
-            notes=f"{len(decoded)} ioctl command(s) reach the driver's {handler} "
-                  "dispatch; COD is n/a (kernel-decided), this is the kernel attack "
-                  "surface. " + ("BINDER_WRITE_READ drives the whole transaction "
-                  "engine. " if any("BINDER_WRITE_READ" in l for l in lines) else ""))
+            notes=f"{len(lines)} ioctl command(s); COD is n/a (kernel-decided). " + notes)
 
     # ---- optional ghidra deepening --------------------------------------- #
 

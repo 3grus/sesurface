@@ -267,6 +267,15 @@
   .piv .pcode .cl { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
   .piv .pcode .cl .tool { color: var(--faint); margin-right: 6px; }
   .piv .pcode .cl .cpath { color: var(--fg); }
+  .piv .kdetail { margin-top: 6px; padding: 7px 9px; background: var(--panel-2);
+    border-radius: 6px; }
+  .piv .khandler { font-family: var(--mono); font-size: 12px; color: var(--fg); font-weight: 600; }
+  .piv .kart { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-top: 2px; overflow-wrap: anywhere; }
+  .piv .kcmds { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+  .piv .kcmd { font-family: var(--mono); font-size: 10px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; }
   .piv .prat { font-size: 11.5px; color: var(--faint); margin-top: 6px; max-width: 95ch; }
   .piv .plock { font-size: 11.5px; margin-top: 6px; color: var(--protected);
     background: var(--protected-soft); border-radius: 6px; padding: 5px 9px;
@@ -812,6 +821,24 @@
       if (p.code.length > 3) cb.append(Object.assign(el("div", "cl"),
         { textContent: `… +${p.code.length - 3} more`, style: "color:var(--faint)" }));
       card.append(cb);
+    }
+    // Kernel ioctl detail: the driver handler, the decoded command surface, and where
+    // the driver code lives (kernel image vs a .ko) -- what to open and what to look at.
+    if (p.ioctl) {
+        const k = el("div", "kdetail");
+        k.append(Object.assign(el("div", "khandler"),
+            { textContent: "handler: " + p.ioctl.handler }));
+        if (p.ioctl.artifact) k.append(Object.assign(el("div", "kart"),
+            { textContent: "code in: " + p.ioctl.artifact }));
+        if (p.ioctl.ioctls && p.ioctl.ioctls.length) {
+            const cmds = el("div", "kcmds");
+            p.ioctl.ioctls.slice(0, 10).forEach(c => cmds.append(
+                Object.assign(el("span", "kcmd"), { textContent: c })));
+            if (p.ioctl.ioctls.length > 10) cmds.append(Object.assign(el("span", "kcmd more"),
+                { textContent: `+${p.ioctl.ioctls.length - 10}` }));
+            k.append(cmds);
+        }
+        card.append(k);
     }
     if (p.rationale) card.append(Object.assign(el("div", "prat"), { textContent: p.rationale }));
     if (p.lockdown) {

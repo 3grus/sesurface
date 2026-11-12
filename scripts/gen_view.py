@@ -25,6 +25,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 
 from sesurface.engine import build_image_model, run_reach
@@ -108,6 +109,15 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
     # a new domain) and what its code it can attack (ATTACKS: feed input to a domain
     # whose bug would escalate). Each target is resolved to the on-disk code to open.
     app_domains = policy.expand("appdomain")
+    # Kernel-ioctl detail (driver handler, decoded commands, where the code lives),
+    # keyed by device setype, so a "can attack kernel" pivot can carry it.
+    ioctl_detail = {}
+    for n in native:
+        if n["tclass"] in ("chr_file", "blk_file") and n["attribution"] == "kernel":
+            ioctl_detail[n["setype"]] = {
+                "handler": n["handler"], "artifact": n["artifact"],
+                "ioctls": n["ioctls"], "notes": n["notes"]}
+    _via_type = re.compile(r"ioctl on (\S+) ")
 
     def _pivot_code(p):
         arts = list(p.code)
@@ -125,10 +135,15 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
         return out
 
     def _pivot(p, kind):
-        return {"kind": kind, "to": p.to_domain, "via": p.via,
-                "rationale": p.rationale, "rank": p.rank, "lockdown": p.lockdown,
-                "escalates": p.to_domain not in app_domains,
-                "code": _pivot_code(p)}
+        d = {"kind": kind, "to": p.to_domain, "via": p.via,
+             "rationale": p.rationale, "rank": p.rank, "lockdown": p.lockdown,
+             "escalates": p.to_domain not in app_domains,
+             "code": _pivot_code(p)}
+        if p.to_domain == "kernel":
+            mt = _via_type.search(p.via)
+            if mt and mt.group(1) in ioctl_detail:
+                d["ioctl"] = ioctl_detail[mt.group(1)]
+        return d
 
     pivots = {
         "becomes": [_pivot(p, "becomes") for p in report.pivots.becomes],

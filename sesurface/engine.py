@@ -27,6 +27,7 @@ from .model.contextload import load_contexts
 from .model.extract import ImageFiles
 from .model.initrc import DomainServiceMap, InitRcDb, parse_init_rc
 from .model.appdomain import AppDomainIndex, build_app_domain_index
+from .model.kerneldrv import KernelArtifacts, build_kernel_artifacts
 from .model.inode import InodeIndex, build_inode_index
 from .model.partitions import PartitionSet, build_partition_set
 from .model.ueventd import UeventdDb, parse_ueventd
@@ -37,7 +38,7 @@ from .policy.policy import Policy
 from .subject import resolve_subject
 from .types import Finding, Subject
 
-_CACHE_VERSION = 6   # Bump when the cached structures change shape.
+_CACHE_VERSION = 7   # Bump when the cached structures change shape.
 
 
 @dataclass
@@ -57,6 +58,7 @@ class ImageModel:
     aids: AidDb
     vintf: VintfDb
     appdomains: "AppDomainIndex"
+    kernel: "KernelArtifacts"
 
     def open_policy(self) -> Policy:
         """Load the assembled policy with setools (cheap; not cached)."""
@@ -132,10 +134,14 @@ def build_image_model(image_dir: str, work_dir: str,
     finally:
         files.close()
 
+    # Kernel image + loadable modules, so a device-ioctl pivot can name where the
+    # driver code lives (built into the kernel binary, or a specific .ko).
+    kernel = build_kernel_artifacts(image_dir, inodes)
+
     model = ImageModel(image_dir=image_dir, work_dir=work_dir, fingerprint=fp,
                        partitions=parts, inodes=inodes, contexts=contexts,
                        assembled=assembled, initrc=initrc, ueventd=ueventd,
-                       aids=aids, vintf=vintf, appdomains=appdomains)
+                       aids=aids, vintf=vintf, appdomains=appdomains, kernel=kernel)
     if use_cache:
         with open(cache_path, "wb") as f:
             pickle.dump(model, f)
