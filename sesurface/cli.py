@@ -275,6 +275,55 @@ def _cmd_attribute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_kallsyms(args: argparse.Namespace) -> int:
+    """Self-check the kernel-symbol enrichment against a kernel image.
+
+    Reports: whether the image decompressed (and in what format), whether the external
+    address tool is available, and for each probe symbol whether it is present in this
+    kernel (and its address, if resolvable). This is the quick way to tell, on a custom
+    image, whether the enrichment will work -- or honestly cannot.
+    """
+    import shutil
+    import tempfile
+    from .model.kallsyms import KernelSymbols
+
+    if not os.path.exists(args.kernel):
+        print(f"error: no such kernel image: {args.kernel}", file=sys.stderr)
+        return 1
+    probes = args.symbols or [
+        "ashmem_ioctl", "binder_ioctl", "dma_heap_ioctl", "tty_ioctl",
+        "tun_chr_ioctl", "usbdev_ioctl", "do_mmap",  # do_mmap: a near-universal sanity symbol
+    ]
+    cache = tempfile.mkdtemp(prefix="sesurface-kallsyms-")
+    ks = KernelSymbols(args.kernel, cache)
+    print(f"kernel image : {args.kernel}")
+    if not ks.available():
+        print("decompress   : FAILED -- could not extract a vmlinux carrying the kernel "
+              "banner.\n  The enrichment will degrade to map-asserted symbols for this "
+              "image. Supported\n  compressions: gzip, xz, lzma, bzip2, lz4, zstd "
+              "(zstd needs the `zstandard` module).")
+        return 2
+    print(f"decompress   : ok (format: {ks.format})")
+    tool = shutil.which("vmlinux-to-elf")
+    print(f"address tool : {'vmlinux-to-elf found -> addresses available' if tool else 'vmlinux-to-elf NOT installed -> presence only (pipx install vmlinux-to-elf)'}")
+    print("probe symbols:")
+    found = 0
+    for s in probes:
+        if ks.present(s):
+            found += 1
+            addr = ks.address(s)
+            print(f"  [+] {s:16s} present" + (f" @ 0x{addr:x}" if addr is not None else ""))
+        else:
+            print(f"  [-] {s:16s} not found")
+    print(f"\n{found}/{len(probes)} probe symbol(s) present. "
+          + ("Symbol enrichment works on this image."
+             if found else
+             "No probes matched: this kernel may lack literal symbol names (no BTF/"
+             "kallsyms strings), or uses different driver names -- enrichment will be "
+             "map-asserted only."))
+    return 0
+
+
 def _cmd_stub(args: argparse.Namespace) -> int:
     print(f"'{args._name}' is not implemented yet (planned for a later phase).",
           file=sys.stderr)
@@ -340,6 +389,14 @@ def build_parser() -> argparse.ArgumentParser:
     at.add_argument("--no-transitions", action="store_true",
                     help="do not follow process-transition (BECOMES) pivots")
     at.set_defaults(func=_cmd_attribute)
+
+    ks = sub.add_parser("kallsyms",
+                        help="self-check: can the kernel-symbol enrichment read this "
+                             "kernel image? (decompress + confirm probe symbols)")
+    ks.add_argument("kernel", help="path to the kernel image (bzImage/Image/kernel-*)")
+    ks.add_argument("symbols", nargs="*",
+                    help="symbols to probe (default: common driver ioctl handlers)")
+    ks.set_defaults(func=_cmd_kallsyms)
 
     return ap
 

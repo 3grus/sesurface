@@ -111,12 +111,15 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
     app_domains = policy.expand("appdomain")
     # Kernel-ioctl detail (driver handler, decoded commands, where the code lives),
     # keyed by device setype, so a "can attack kernel" pivot can carry it.
+    _ksym_re = re.compile(r"\[kallsyms:[^\]]*\]")
     ioctl_detail = {}
     for n in native:
         if n["tclass"] in ("chr_file", "blk_file") and n["attribution"] == "kernel":
+            km = _ksym_re.search(n["notes"] or "")
             ioctl_detail[n["setype"]] = {
                 "handler": n["handler"], "artifact": n["artifact"],
-                "ioctls": n["ioctls"], "notes": n["notes"]}
+                "ioctls": n["ioctls"], "notes": n["notes"],
+                "ksym": km.group(0) if km else ""}
     _via_type = re.compile(r"ioctl on (\S+) ")
 
     def _pivot_code(p):

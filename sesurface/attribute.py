@@ -330,6 +330,21 @@ class Attributor:
         self._fw_analyzer = None            # FrameworkAnalyzer | None
         self._fw_reason = ""                # why it is unavailable, if so
         self._fw_tried = False
+        # kernel-symbol enrichment (decompress vmlinux, confirm driver handlers):
+        # built lazily on the first device-ioctl finding, best-effort.
+        self._ksyms = None
+        self._ksyms_tried = False
+
+    def _kernel_symbols(self):
+        """Lazily build the KernelSymbols enricher (or None if unavailable)."""
+        if self._ksyms_tried:
+            return self._ksyms
+        self._ksyms_tried = True
+        kimg = getattr(self._model.kernel, "kernel_image", "")
+        if kimg:
+            from .model.kallsyms import KernelSymbols
+            self._ksyms = KernelSymbols(kimg, os.path.join(self._scratch, "kallsyms"))
+        return self._ksyms
 
     # ---- image/file plumbing --------------------------------------------- #
 
@@ -761,6 +776,8 @@ class Attributor:
             src = f" Source: {drv.source}." if drv.source else ""
             notes = (f"ioctl reaches the {drv.driver} driver; its handler is "
                      f"`{drv.handler}`.{src} {where}")
+            # Enrichment: confirm the (map-asserted) handler symbol against THIS kernel.
+            notes += self._kernel_confirm(drv.handler)
         else:
             handler = "(unrecognised driver ioctl)"
             artifact = self._model.kernel.kernel_image or f.setype
@@ -781,6 +798,34 @@ class Attributor:
             tool="kernel", caller_check="n/a", ioctls=lines, method="ioctl-decode",
             confidence="high",
             notes=f"{len(lines)} ioctl command(s); COD is n/a (kernel-decided). " + notes)
+
+    def _kernel_confirm(self, handler: str) -> str:
+        """A short note confirming a driver handler symbol against the kernel image.
+
+        Pure enrichment: upgrades the map-asserted symbol to 'confirmed present in this
+        kernel' (and an address, if `vmlinux-to-elf` is installed). Any failure --
+        no kernel image, an undecompressible format, a vendor-placeholder handler --
+        leaves the map result untouched and says why, so the degradation is visible.
+        """
+        sym = handler.strip("<>").strip()
+        if not sym or "/" in sym or "vendor" in sym.lower():
+            return ""     # a generic/vendor placeholder, not a concrete symbol
+        ks = self._kernel_symbols()
+        if ks is None:
+            return ""
+        if not ks.available():
+            return (f" [kallsyms: kernel image present but could not be decompressed/"
+                    f"scanned ({ks.format or 'unknown format'}); `{sym}` is map-asserted "
+                    "only.]")
+        if ks.present(sym):
+            addr = ks.address(sym)
+            if addr is not None:
+                return f" [kallsyms: `{sym}` confirmed in this kernel at 0x{addr:x}.]"
+            return (f" [kallsyms: `{sym}` confirmed present in this kernel (install "
+                    "`vmlinux-to-elf` for its address).]")
+        return (f" [kallsyms: `{sym}` NOT found in this kernel's symbols -- the driver "
+                "may be absent, built differently, or named otherwise here; verify "
+                "manually.]")
 
     # ---- optional ghidra deepening --------------------------------------- #
 

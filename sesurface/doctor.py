@@ -113,6 +113,14 @@ PROBES: list[Probe] = [
           required=False, env="SESURFACE_GHIDRA",
           paths=["~/ghidra_12.2_PUBLIC/support/analyzeHeadless",
                  "/opt/ghidra/support/analyzeHeadless"]),
+    Probe("vmlinux-to-elf", "tool",
+          "Rebuild a symbolised ELF from a kernel image's kallsyms, so a device-ioctl "
+          "handler is confirmed at a verified ADDRESS, not just by name. Optional "
+          "enrichment -- the presence check (decompress + bounded symbol scan) works "
+          "without it. Self-check with `sesurface kallsyms <kernel>`.",
+          "Kernel-ioctl handlers are confirmed by name only (no address); the curated "
+          "driver map still resolves them.",
+          "pipx install vmlinux-to-elf", required=False),
 ]
 
 

@@ -272,6 +272,8 @@
   .piv .khandler { font-family: var(--mono); font-size: 12px; color: var(--fg); font-weight: 600; }
   .piv .kart { font-family: var(--mono); font-size: 11px; color: var(--muted);
     margin-top: 2px; overflow-wrap: anywhere; }
+  .piv .kksym { font-size: 11px; margin-top: 4px; color: var(--review); }
+  .piv .kksym.ok { color: var(--protected); }
   .piv .kcmds { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
   .piv .kcmd { font-family: var(--mono); font-size: 10px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
@@ -830,6 +832,12 @@
             { textContent: "handler: " + p.ioctl.handler }));
         if (p.ioctl.artifact) k.append(Object.assign(el("div", "kart"),
             { textContent: "code in: " + p.ioctl.artifact }));
+        if (p.ioctl.ksym) {
+            const ok = /confirmed/.test(p.ioctl.ksym);
+            const ks = el("div", "kksym" + (ok ? " ok" : ""));
+            ks.textContent = p.ioctl.ksym.replace(/^\[|\]$/g, "");
+            k.append(ks);
+        }
         if (p.ioctl.ioctls && p.ioctl.ioctls.length) {
             const cmds = el("div", "kcmds");
             p.ioctl.ioctls.slice(0, 10).forEach(c => cmds.append(
