@@ -71,6 +71,27 @@ class AppDomainIndex:
 # mac_permissions: signing cert -> seinfo
 # --------------------------------------------------------------------------- #
 
+def quiet_androguard() -> None:
+    """Silence androguard's logging. v4 uses loguru; older versions use logging.
+
+    androguard logs a line per parsed element at DEBUG, which floods a run that parses
+    100+ APKs. We disable both back-ends (idempotent, safe if either is absent).
+    """
+    try:
+        from loguru import logger as _loguru      # androguard 4.x
+        _loguru.disable("androguard")
+    except Exception:
+        pass
+    try:
+        import logging
+        logging.getLogger("androguard").setLevel(logging.ERROR)
+        for name in list(logging.root.manager.loggerDict):
+            if name.startswith("androguard"):
+                logging.getLogger(name).setLevel(logging.ERROR)
+    except Exception:
+        pass
+
+
 def load_seinfo_signers(files) -> dict[str, str]:
     """{cert-DER-hex(upper): seinfo} from every mac_permissions.xml on the image."""
     signers: dict[str, str] = {}
@@ -189,8 +210,7 @@ def build_app_domain_index(files, inodes, contexts) -> AppDomainIndex:
         from androguard.core.apk import APK  # noqa: F401
     except Exception:
         return idx
-    import logging
-    logging.getLogger("androguard").setLevel(logging.ERROR)
+    quiet_androguard()
 
     signers = load_seinfo_signers(files)
     seapp = contexts.seapp

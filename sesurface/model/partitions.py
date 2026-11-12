@@ -44,6 +44,7 @@ MOUNTPOINTS = {
 # Filesystem superblock magics.
 _EXT_MAGIC = b"\x53\xef"            # at byte 0x438 (little-endian 0xEF53).
 _EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"  # 0xE0F5E1E2 LE, at byte 0x400.
+_F2FS_MAGIC = b"\x10\x20\xf5\xf2"   # 0xF2F52010 LE, at byte 0x400 (userdata/metadata).
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,8 @@ def _sniff_fs(path: str) -> str:
         return "unknown"
     if head[0:4] == _EROFS_MAGIC:
         return "erofs"
+    if head[0:4] == _F2FS_MAGIC:            # f2fs superblock magic at 0x400.
+        return "f2fs"
     if head[0x38:0x3A] == _EXT_MAGIC:       # 0x438 - 0x400 = 0x38.
         return "ext4"
     return "unknown"
@@ -243,5 +246,16 @@ def _finalize(ps: PartitionSet) -> None:
     if "system" not in ps.partitions:
         ps.notes.append("no 'system' partition found -- image layout is unexpected")
     for p in ps.partitions.values():
-        if p.fstype == "unknown":
-            ps.notes.append(f"partition '{p.name}' has an unrecognised filesystem")
+        if p.fstype == "f2fs":
+            # f2fs is the read-write data format (userdata/metadata/cache). It holds no
+            # read-only system content the analysis needs, and is not read here.
+            ps.notes.append(
+                f"partition '{p.name}' ({p.mountpoint}) is f2fs (read-write data); "
+                "not analysed -- expected, holds no system/policy content")
+        elif p.fstype == "unknown":
+            ps.notes.append(
+                f"partition '{p.name}' ({p.mountpoint}) has an unrecognised filesystem "
+                "-- its files, labels and inodes are NOT indexed. If this holds "
+                "system/vendor content, that content is missing from the analysis "
+                "(it may be a still-compressed/sparse image, an encrypted partition, "
+                "or an fs type sesurface does not read).")
