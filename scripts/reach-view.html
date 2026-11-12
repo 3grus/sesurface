@@ -246,6 +246,34 @@
     background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px;
     padding: 1px 6px; }
 
+  /* ---- pivots (blast radius) ---- */
+  .pivgroup { margin-bottom: 20px; }
+  .pivgroup > h3 { font-size: 13px; font-weight: 700; display: flex; align-items: center;
+    gap: 8px; margin-bottom: 4px; }
+  .pivgroup .ghelp { font-size: 12px; color: var(--muted); margin-bottom: 9px;
+    max-width: 92ch; }
+  .piv { background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+    padding: 11px 13px; margin-bottom: 7px; }
+  .piv.becomes { border-left: 3px solid var(--exposed); }
+  .piv.attacks { border-left: 3px solid var(--review); }
+  .piv .ptop { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .piv .arrow { font-family: var(--mono); font-weight: 700; color: var(--faint); }
+  .piv .pto { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+  .piv .esc { font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--exposed); background: var(--exposed-soft);
+    padding: 2px 7px; border-radius: 5px; }
+  .piv .pvia { font-size: 12px; color: var(--muted); margin-top: 5px; overflow-wrap: anywhere; }
+  .piv .pcode { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .piv .pcode .cl { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+  .piv .pcode .cl .tool { color: var(--faint); margin-right: 6px; }
+  .piv .pcode .cl .cpath { color: var(--fg); }
+  .piv .prat { font-size: 11.5px; color: var(--faint); margin-top: 6px; max-width: 95ch; }
+  .piv .plock { font-size: 11.5px; margin-top: 6px; color: var(--protected);
+    background: var(--protected-soft); border-radius: 6px; padding: 5px 9px;
+    overflow-wrap: anywhere; }
+  .piv .plock b { text-transform: uppercase; font-size: 10px; letter-spacing: .04em;
+    margin-right: 6px; color: var(--protected); }
+
   /* ---- surface ---- */
   table.surf { width: 100%; border-collapse: collapse; font-size: 13px; }
   table.surf th { text-align: left; font-size: 11px; text-transform: uppercase;
@@ -324,6 +352,8 @@
         <span class="count" id="tc-fw"></span></button>
       <button data-tab="native" aria-selected="false">Native &amp; kernel
         <span class="count" id="tc-nat"></span></button>
+      <button data-tab="pivots" aria-selected="false">Where it leads
+        <span class="count" id="tc-piv"></span></button>
       <button data-tab="surface" aria-selected="false">Reachable surface
         <span class="count" id="tc-surf"></span></button>
     </nav>
@@ -367,6 +397,17 @@
       server's compiled code for a caller check. Grouped below by what we found — the
       <b>open</b> and <b>couldn't-locate</b> groups are where to look first.</p>
     <div id="natlist"></div>
+  </section>
+
+  <!-- PIVOTS -->
+  <section id="tab-pivots" hidden>
+    <p class="section-intro">The blast radius: if this subject is compromised, where can
+      it go next? <b>Becomes</b> = it can run code <em>as</em> another domain with no
+      further bug (an exec transition, or writing a file that domain loads as code).
+      <b>Can attack</b> = it can feed input into another domain's code, so a bug there
+      would escalate. Each target is resolved to the on-disk code to open, and to the
+      single policy rule whose removal cuts the edge.</p>
+    <div id="pivlist"></div>
   </section>
 
   <!-- SURFACE -->
@@ -517,6 +558,19 @@
       li.append(link("— filter to them →", goTab("framework", "needs-review")));
       items.push(li);
     }
+    // 5. Blast radius: where owning the subject leads.
+    const P = DATA.pivots || { becomes: [], attacks: [] };
+    const esc = P.becomes.filter(p => p.escalates).length;
+    if (P.becomes.length || P.attacks.length) {
+      const li = el("li");
+      li.append(document.createTextNode("Blast radius: it can "));
+      li.append(Object.assign(el("b"), { textContent: "become " + P.becomes.length }),
+        document.createTextNode(` domain${P.becomes.length === 1 ? "" : "s"}` + (esc ? ` (${esc} escaping the app sandbox)` : "") + " and "),
+        Object.assign(el("b"), { textContent: "attack " + P.attacks.length }),
+        document.createTextNode(" more "));
+      li.append(link("— where it leads →", goTab("pivots")));
+      items.push(li);
+    }
     if (!items.length) {
       const li = el("li"); li.append(Object.assign(el("span", "none"),
         { textContent: "No open calls found — every reachable service call is permission-checked on this image." }));
@@ -526,8 +580,10 @@
   })();
 
   // ---- tab counts ----
+  const PIV = DATA.pivots || { becomes: [], attacks: [] };
   $("#tc-fw").textContent = fw.n_services;
   $("#tc-nat").textContent = DATA.native.length;
+  $("#tc-piv").textContent = PIV.becomes.length + PIV.attacks.length;
   $("#tc-surf").textContent = DATA.classes.length;
 
   // ---- state ----
@@ -716,6 +772,81 @@
     });
   }
 
+  // ---- pivots (blast radius) ----
+  function attackBand(p) {
+    if (p.to === "kernel") return "kernel";
+    if (/expected shared|mostly intended/.test(p.rationale || "")) return "shared";
+    if (p.rank <= 25) return "hal";
+    if (p.rank <= 35) return "file";
+    return "service";
+  }
+  const PIV_BANDS = {
+    kernel: ["Kernel drivers (ioctl)",
+      "An ioctl reaches a kernel driver directly; a driver bug is a kernel compromise. The decoded command set is the surface."],
+    hal: ["HAL / vendor servers",
+      "Reaching a HAL's binder: these usually do NOT re-check the caller in code, so reachability is effectively real code-feeding."],
+    file: ["Files a privileged domain parses",
+      "The subject can write a file type one of these domains reads; a parsing bug there runs with that domain's privileges."],
+    service: ["Framework / system services",
+      "A binder call reaches these; the service's own code may still enforce a permission check (see the Framework tab)."],
+    shared: ["Shared / app data (mostly intended)",
+      "These domains read widely-shared content (external storage, the app's own data); usually intended surface, listed for completeness."],
+  };
+  function pivCard(p) {
+    const card = el("div", "piv " + p.kind);
+    const top = el("div", "ptop");
+    top.append(Object.assign(el("span", "arrow"), { textContent: p.kind === "becomes" ? "▶ becomes" : "⤏ can attack" }));
+    top.append(Object.assign(el("span", "pto"), { textContent: p.to }));
+    if (p.kind === "becomes" && p.escalates)
+      top.append(Object.assign(el("span", "esc"), { textContent: "escapes app sandbox" }));
+    card.append(top);
+    if (p.via) card.append(Object.assign(el("div", "pvia"), { textContent: "via " + p.via }));
+    if (p.code && p.code.length) {
+      const cb = el("div", "pcode");
+      p.code.slice(0, 3).forEach(c => {
+        const cl = el("div", "cl");
+        if (c.tool) cl.append(Object.assign(el("span", "tool"), { textContent: c.tool }));
+        cl.append(Object.assign(el("span", "cpath"), { textContent: c.path }));
+        cb.append(cl);
+      });
+      if (p.code.length > 3) cb.append(Object.assign(el("div", "cl"),
+        { textContent: `… +${p.code.length - 3} more`, style: "color:var(--faint)" }));
+      card.append(cb);
+    }
+    if (p.rationale) card.append(Object.assign(el("div", "prat"), { textContent: p.rationale }));
+    if (p.lockdown) {
+      const lk = el("div", "plock");
+      lk.append(Object.assign(el("b"), { textContent: "break it" }),
+        document.createTextNode(p.lockdown));
+      card.append(lk);
+    }
+    return card;
+  }
+  function renderPivots() {
+    const wrap = $("#pivlist"); wrap.innerHTML = "";
+    const P = DATA.pivots || { becomes: [], attacks: [] };
+    // BECOMES first — the most direct escalation.
+    const bg = el("div", "pivgroup");
+    bg.append(Object.assign(el("h3"), { textContent: `Becomes — runs code as another domain · ${P.becomes.length}` }));
+    bg.append(Object.assign(el("div", "ghelp"),
+      { textContent: "No second bug needed: an exec transition or a file the target loads as code lets the subject execute as that domain. Red = escapes the app sandbox." }));
+    if (!P.becomes.length) bg.append(Object.assign(el("div", "empty"),
+      { textContent: "No BECOMES edges — the subject cannot directly run as another domain." }));
+    P.becomes.forEach(p => bg.append(pivCard(p)));
+    wrap.append(bg);
+    // ATTACKS grouped by severity band.
+    const bands = {};
+    P.attacks.forEach(p => (bands[attackBand(p)] = bands[attackBand(p)] || []).push(p));
+    ["kernel", "hal", "file", "service", "shared"].forEach(b => {
+      const list = bands[b]; if (!list || !list.length) return;
+      const g = el("div", "pivgroup");
+      g.append(Object.assign(el("h3"), { textContent: `${PIV_BANDS[b][0]} · ${list.length}` }));
+      g.append(Object.assign(el("div", "ghelp"), { textContent: PIV_BANDS[b][1] }));
+      list.sort((a, b2) => a.rank - b2.rank).forEach(p => g.append(pivCard(p)));
+      wrap.append(g);
+    });
+  }
+
   // ---- surface ----
   function renderSurface() {
     const t = $("#surftab"); t.innerHTML = "";
@@ -759,8 +890,9 @@
     state.tab = tab;
     $$("#tabs button").forEach(b => b.setAttribute("aria-selected",
       String(b.dataset.tab === tab)));
-    ["framework", "native", "surface"].forEach(t => $("#tab-" + t).hidden = t !== tab);
+    ["framework", "native", "pivots", "surface"].forEach(t => $("#tab-" + t).hidden = t !== tab);
     if (tab === "native" && !$("#natlist").children.length) renderNative();
+    if (tab === "pivots" && !$("#pivlist").children.length) renderPivots();
     if (tab === "surface" && !$("#surftab").children.length) renderSurface();
   }
   $("#tabs").addEventListener("click", e => {

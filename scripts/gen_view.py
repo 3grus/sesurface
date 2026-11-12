@@ -104,6 +104,37 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
         for k, v in s["counts"].items():
             fw_tot[k] = fw_tot.get(k, 0) + v
 
+    # Pivots -- the blast radius: where owning the subject leads (BECOMES: run code as
+    # a new domain) and what its code it can attack (ATTACKS: feed input to a domain
+    # whose bug would escalate). Each target is resolved to the on-disk code to open.
+    app_domains = policy.expand("appdomain")
+
+    def _pivot_code(p):
+        arts = list(p.code)
+        if not arts and p.to_domain != "kernel":
+            arts = [f"{r.tool}: {r.artifact}" for r in locator.locate_domain(p.to_domain)]
+        out = []
+        seen = set()
+        for a in arts:
+            tool, _sep, path = a.partition(": ")
+            key = (tool.strip(), path.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"tool": tool.strip(), "path": path.strip()})
+        return out
+
+    def _pivot(p, kind):
+        return {"kind": kind, "to": p.to_domain, "via": p.via,
+                "rationale": p.rationale, "rank": p.rank, "lockdown": p.lockdown,
+                "escalates": p.to_domain not in app_domains,
+                "code": _pivot_code(p)}
+
+    pivots = {
+        "becomes": [_pivot(p, "becomes") for p in report.pivots.becomes],
+        "attacks": [_pivot(p, "attacks") for p in report.pivots.attacks],
+    }
+
     return {
         "source": source,
         "generated": datetime.date.today().isoformat(),
@@ -115,6 +146,7 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
         "framework": {"services": services, "totals": fw_tot,
                       "n_services": len(services)},
         "native": native,
+        "pivots": pivots,
     }
 
 
