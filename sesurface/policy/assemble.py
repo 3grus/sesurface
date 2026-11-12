@@ -23,6 +23,14 @@ from typing import Optional
 from ..model.extract import ImageFiles
 
 
+class PolicyAssemblyError(RuntimeError):
+    """The device policy could not be materialised (precompiled + compile both failed).
+
+    Carries a full diagnostic -- what was tried and why each path failed -- so the
+    failure is actionable instead of a downstream 'No such file: <work>/sepolicy'.
+    """
+
+
 @dataclass
 class BuildIdentity:
     """The facts about an image that every finding depends on."""
@@ -135,11 +143,15 @@ def assemble(files: ImageFiles, work_dir: str) -> AssembledPolicy:
     pre_path, reasons = _precompiled_usable(files)
     if pre_path is not None:
         dst = os.path.join(work_dir, "sepolicy")
-        files.extract_to(pre_path, dst)
-        return AssembledPolicy(
-            path=dst, method="precompiled",
-            reason="precompiled policy hashes match system (" + "; ".join(reasons) + ")",
-            identity=identity)
+        if files.extract_to(pre_path, dst) and os.path.getsize(dst) > 0:
+            return AssembledPolicy(
+                path=dst, method="precompiled",
+                reason="precompiled policy hashes match system (" + "; ".join(reasons) + ")",
+                identity=identity)
+        # The precompiled policy matched but could not be read out of its partition
+        # (e.g. an unreadable/omitted vendor partition). Fall through to compiling,
+        # noting why, rather than returning a path to a file that does not exist.
+        reasons.append(f"precompiled matched but could not be extracted from {pre_path}")
 
     # Otherwise compile the policy the way init does, from split CIL.
     return _compile(files, work_dir, identity, reasons)
@@ -184,11 +196,34 @@ def _compile(files: ImageFiles, work_dir: str, identity: BuildIdentity,
             inputs.append(local)
 
     out = os.path.join(work_dir, "sepolicy")
-    cmd = ["secilc", "-m", "-M", "true", "-G", "-N", "-c", "30", *inputs,
-           "-o", out, "-f", "/dev/null"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0 or not os.path.exists(out):
-        warnings.append(f"secilc failed: {proc.stderr.strip()[:300]}")
+    if not inputs:
+        raise PolicyAssemblyError(
+            "No SELinux policy could be assembled for this image.\n"
+            "  - No usable precompiled_sepolicy (" + "; ".join(reasons) + ").\n"
+            "  - No split-CIL inputs were found either (looked for "
+            "plat_sepolicy.cil + mapping/" + (vers or "<version>") + ".cil on system/"
+            "system_ext/product/vendor/odm).\n"
+            "  Likely causes: a partition did not read (check `build-image` notes for "
+            "'unreadable filesystem' / 'could not be expanded'), the policy lives at a "
+            "non-standard path, or plat_sepolicy_vers.txt is missing so the mapping "
+            "files were skipped.")
+    try:
+        proc = subprocess.run(["secilc", "-m", "-M", "true", "-G", "-N", "-c", "30",
+                               *inputs, "-o", out, "-f", "/dev/null"],
+                              capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise PolicyAssemblyError(
+            "secilc is not installed, so the device policy cannot be compiled from CIL. "
+            "Install it (`sesurface doctor` lists it) or supply an image whose "
+            "precompiled_sepolicy matches.") from e
+    if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        raise PolicyAssemblyError(
+            "secilc failed to compile the device policy from "
+            f"{len(inputs)} CIL input(s).\n  inputs: "
+            + ", ".join(os.path.basename(i) for i in inputs)
+            + f"\n  secilc exit {proc.returncode}: {proc.stderr.strip()[:600]}\n"
+            "  (Policy version from plat_sepolicy_vers.txt: "
+            + (vers or "<missing>") + ".)")
     return AssembledPolicy(
         path=out, method="compiled",
         reason="compiled split CIL with secilc (" + "; ".join(reasons) + ")",

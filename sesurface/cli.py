@@ -480,9 +480,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .policy.assemble import PolicyAssemblyError
     ap = build_parser()
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except PolicyAssemblyError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
