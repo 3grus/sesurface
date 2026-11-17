@@ -278,3 +278,109 @@ def _render_finding(f: Finding) -> str:
     if f.code_artifacts:
         lines.append(f"    · code     {', '.join('`'+c+'`' for c in f.code_artifacts[:4])}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Inverse query ("who can touch this path") rendering
+# --------------------------------------------------------------------------- #
+
+def reverse_to_json(report) -> dict[str, Any]:
+    """Machine-readable form of a `reverse.ReverseReport`."""
+    lab = report.label
+    return {
+        "schema": "sesurface/who-can-touch/1",
+        "path": lab.path,
+        "label": {
+            "setype": lab.setype, "tclass": lab.tclass,
+            "source": lab.source, "evidence": lab.evidence,
+        },
+        "classes": list(report.classes),
+        "perms_queried": sorted(report.perms_queried),
+        "te_only": report.te_only,
+        "note": report.note,
+        "counts": {
+            "domains": len(report.touchers),
+            "not_blocked": sum(1 for t in report.touchers if t.allowed),
+        },
+        "touchers": [_toucher_json(t) for t in report.touchers],
+    }
+
+
+def _toucher_json(t) -> dict[str, Any]:
+    return {
+        "domain": t.domain,
+        "allowed": t.allowed,
+        "perms": sorted(t.perms),
+        "source_attrs": list(t.source_attrs),
+        "subject": {
+            "uid_class": t.subject.uid_class.value,
+            "is_permissive": t.subject.is_permissive,
+            "is_mls_trusted": t.subject.is_mls_trusted,
+        },
+        "gates": {
+            g.value: {"decision": v.decision.value, "evidence": v.evidence}
+            for g, v in t.gates.items()
+        },
+    }
+
+
+def render_reverse_report(report) -> str:
+    """Human-readable, auditable report for the inverse query."""
+    lab = report.label
+    L: list[str] = []
+    L.append(f"# Who can touch `{lab.path}`")
+    L.append("")
+    if lab.setype:
+        L.append(f"type     : **{lab.setype}**  (class {lab.tclass}, via {lab.source})")
+    else:
+        L.append("type     : **unresolved**")
+    L.append(f"evidence : {lab.evidence}")
+    classes = ", ".join(report.classes)
+    L.append(f"query    : classes=[{classes}]  perms={sorted(report.perms_queried)}"
+             + ("  (TE only)" if report.te_only else ""))
+    L.append("")
+
+    n = len(report.touchers)
+    m = sum(1 for t in report.touchers if t.allowed)
+    L.append(f"**{n} domain(s)** can reach it at the TE layer; **{m}** not gate-blocked.")
+    if report.note:
+        L.append("")
+        L.append(f"> {report.note}")
+    L.append("")
+    L.append(f"Legend — gates: {_DEC[Decision.ALLOW]} allow  {_DEC[Decision.DENY]} deny  "
+             f"{_DEC[Decision.NA]} n/a  {_DEC[Decision.UNKNOWN]} unknown · "
+             f"gates: TE=type-enforcement MLS=categories DAC=unix-bits COD=in-code")
+    L.append("")
+
+    allowed = [t for t in report.touchers if t.allowed]
+    blocked = [t for t in report.touchers if not t.allowed]
+    if allowed:
+        L.append("## Not gate-blocked")
+        L.append("")
+        for t in allowed:
+            L.extend(_reverse_toucher_lines(t))
+    if blocked:
+        L.append("## Gate-blocked (kept for audit)")
+        L.append("")
+        for t in blocked:
+            L.extend(_reverse_toucher_lines(t))
+    return "\n".join(L)
+
+
+def _reverse_toucher_lines(t) -> list[str]:
+    out: list[str] = []
+    flags = []
+    if t.subject.is_permissive:
+        flags.append("permissive")
+    if t.subject.is_mls_trusted:
+        flags.append("mls-trusted")
+    flagstr = f"  ({', '.join(flags)})" if flags else ""
+    perms = " ".join(sorted(t.perms)) or "-"
+    out.append(f"- **{t.domain}**  [{t.subject.uid_class.value}]{flagstr}  — {perms}")
+    for g in (Gate.TE, Gate.MLS, Gate.DAC, Gate.INCODE):
+        v = t.gates.get(g)
+        if v is None:
+            continue
+        out.append(f"    {_GATE_LABEL[g]} {_DEC[v.decision]} : {v.evidence}")
+    out.append("")
+    return out

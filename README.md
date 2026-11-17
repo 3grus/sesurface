@@ -90,6 +90,24 @@ uv run sesurface reach -r /path/to/unpacked_image -s untrusted_app \
 uv run sesurface locate --json out/untrusted_app.json
 ```
 
+The inverse question — *given a path, which subjects can reach it?* — is answered
+by `who-can-touch` (the dual of `reach`). It resolves the path to its SELinux type
+(authoritative xattr for a file in the image; `genfscon` for `/proc`/`/sys`;
+`file_contexts` prediction for a runtime path), finds every domain the policy lets
+touch that type, and runs the same MLS/DAC gates:
+
+```bash
+uv run sesurface who-can-touch -r /path/to/unpacked_image /dev/kgsl-3d0 \
+    --report out/kgsl.md --json out/kgsl.json
+# narrow or widen: --class chr_file  --perms read,write,ioctl  --te-only
+```
+
+> On a **live device** the same question is answered dynamically (and sees the real
+> loaded policy and runtime labels): `ls -Z <path>` for the type, then
+> `sesearch -A -t <type> -c <class> /sys/fs/selinux/policy` and `seinfo -x` for the
+> domains, `ps -eZ` for which of them actually run, and `dmesg | grep avc` to
+> confirm by triggering access. `who-can-touch` is the static equivalent.
+
 The expensive, source-independent work (reconstructing the image and assembling the
 policy) is cached on disk keyed by an image fingerprint, so re-running with a
 different `-s` domain is cheap.

@@ -93,6 +93,37 @@ def _cmd_reach(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_who_can_touch(args: argparse.Namespace) -> int:
+    from .engine import build_image_model
+    from .reverse import run_who_can_touch
+    from .report import render_reverse_report, reverse_to_json
+    work = args.work or _default_work_dir(args.root)
+    model = build_image_model(args.root, work, use_cache=not args.no_cache)
+    policy = model.open_policy()
+
+    classes = [c.strip() for c in args.klass.split(",") if c.strip()] if args.klass else None
+    perms = frozenset(p.strip() for p in args.perms.split(",") if p.strip()) if args.perms else None
+
+    report = run_who_can_touch(model, policy, args.path, classes=classes,
+                               perms=perms, te_only=args.te_only)
+    n = len(report.touchers)
+    m = sum(1 for t in report.touchers if t.allowed)
+    lab = report.label
+    print(f"{args.path}: {lab.setype or '(unlabelled)'} via {lab.source}; "
+          f"{n} domain(s) reach it ({m} not gate-blocked).", file=sys.stderr)
+    if args.report:
+        with open(args.report, "w") as f:
+            f.write(render_reverse_report(report))
+        print(f"  report -> {args.report}", file=sys.stderr)
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(reverse_to_json(report), f, indent=2)
+        print(f"  json   -> {args.json}", file=sys.stderr)
+    if not args.report and not args.json:
+        print(render_reverse_report(report))
+    return 0
+
+
 def _with_suffix(path: str, suffix: str) -> str:
     """Insert `-suffix` before the extension when analysing multiple domains."""
     if not suffix:
@@ -435,6 +466,24 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--no-transitions", action="store_true",
                     help="do not follow process-transition (BECOMES) pivots")
     rc.set_defaults(func=_cmd_reach)
+
+    wct = sub.add_parser("who-can-touch",
+                         help="inverse of reach: which subjects can reach a given path")
+    wct.add_argument("-r", "--root", required=True,
+                     help="directory of raw partition images (system.img, vendor.img, ...)")
+    wct.add_argument("path", help="absolute on-device path, e.g. /dev/kgsl-3d0")
+    wct.add_argument("--class", dest="klass",
+                     help="object class(es), comma-separated (file,dir,chr_file,...); "
+                          "inferred from the node when omitted")
+    wct.add_argument("--perms",
+                     help="perms to test, comma-separated (default: a broad read+write set)")
+    wct.add_argument("--te-only", action="store_true",
+                     help="only the TE layer (skip MLS/DAC); widest, over-reports")
+    wct.add_argument("--report", help="write the human-readable report here (.md)")
+    wct.add_argument("--json", help="write the machine-readable JSON here (.json)")
+    wct.add_argument("--work", help="work/cache directory (default: .sesurface-cache next to the image)")
+    wct.add_argument("--no-cache", action="store_true", help="rebuild the image model even if cached")
+    wct.set_defaults(func=_cmd_who_can_touch)
 
     lo = sub.add_parser("locate",
                         help="turn a reach JSON into a ghidra/jadx code worklist")
