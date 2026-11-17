@@ -97,6 +97,62 @@ privilege(end state) × 1/hops × narrowness(COD) × breadth × confirmed-backin
 fields the tool already emits (`rank`, the COD ledger, `backing.tier`). `breadth` is
 the one judgement you add by hand.
 
+## Validating a crown-jewels finding
+
+A crown-jewels holder is a *policy* fact: the compiled sepolicy grants that domain
+the primitive. Necessary, not sufficient — confirm it before trusting it.
+
+**Read the line first.** The reach mark decides whether it is a real primitive:
+
+- `◆ self` / `● BECOMES` — the attacker holds it, or becomes the holder by exec with
+  no bug. A usable route.
+- `◎ ATTACKS` — the primitive lives in a domain you can only reach by compromising
+  it first. Latent, not a free primitive. Not a false positive — read it as "if you
+  already owned X."
+- `·` — not reachable from the attacker.
+
+Then `backing.tier`: `confirmed` = a real artifact in the image carries the domain's
+entrypoint; `policy-only` = defined but nothing runs as it (weak).
+
+**Static ground truth** — the policy the tool built is on disk at
+`<image_dir>/.sesurface-cache/sepolicy`, a real kernel policy setools can read.
+`sys_module`/`sys_rawio` are class `capability`; `mac_admin`/`mac_override` are
+`capability2`. Reproduce the holder's `evidence` line (from `--json`):
+
+```
+POLICY=<image_dir>/.sesurface-cache/sepolicy
+sesearch -A -s <holder> -c capability -p sys_module "$POLICY"   # the grant
+seinfo  -a<attr> -x "$POLICY"                                   # expand an attribute source
+sesearch -A -s <attacker> -c process -p transition "$POLICY"    # verify each BECOMES hop
+```
+
+**Why disk inspection alone can't confirm it.** `allow D self:capability sys_module`
+only means SELinux won't block CAP_SYS_MODULE. For it to *work*, two things outside
+sepolicy must also hold, invisible in the image: the process must actually carry the
+Linux capability (its `CapBnd`/`CapEff`, set from uid + bounding set at launch), and
+the kernel must support it (`CONFIG_MODULES=y`, not `MODULE_SIG_FORCE`). Many Android
+kernels build drivers in and ship modules off or signature-forced, making
+`sys_module` inert where policy grants it. Policy-true-but-unusable is the honest
+false-positive shape for capabilities — and the reason kernel RCE via a reachable
+driver is usually the realistic route.
+
+**Live confirmation** (rooted / userdebug / adb) — authoritative over the image:
+
+```
+adb pull /sys/fs/selinux/policy /tmp/live.policy   # the ACTUAL loaded policy
+sesearch -A -s <holder> -c capability -p sys_module /tmp/live.policy
+adb shell ps -eZ | grep <holder>                   # does anything run as it?
+adb shell cat /proc/<pid>/status | grep Cap        # real cap set; CAP_SYS_MODULE = bit 16
+adb shell 'zcat /proc/config.gz' | grep -iE 'CONFIG_MODULES|MODULE_SIG'
+adb shell getenforce
+```
+
+Dynamic proof on a device you own: trigger it and watch `dmesg -w | grep avc` /
+`logcat -b events`; a permitted op with no AVC denial is end-to-end confirmation.
+A finding is real when the mark is `self`/`BECOMES`, `sesearch` reproduces the rule,
+every hop checks out, backing is `confirmed`, and (live) the domain runs with the
+capability in `CapBnd` on a module-capable kernel.
+
 ## Limits to keep honest
 
 - COD flags where to look; it does not prove a bug exists.
