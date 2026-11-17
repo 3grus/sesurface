@@ -124,6 +124,36 @@ def _cmd_who_can_touch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_crown_jewels(args: argparse.Namespace) -> int:
+    from .engine import build_image_model
+    from .crownjewels import run_crown_jewels
+    from .report import render_crownjewels_report, crownjewels_to_json
+    work = args.work or _default_work_dir(args.root)
+    model = build_image_model(args.root, work, use_cache=not args.no_cache)
+    policy = model.open_policy()
+
+    attacker = ([d.strip() for d in args.from_.split(",") if d.strip()]
+                if args.from_ else None)
+    report = run_crown_jewels(model, policy, attacker=attacker)
+
+    reachable = sum(1 for r in report.results for h in r.holders if h.reachable)
+    total = sum(len(r.holders) for r in report.results)
+    print(f"crown-jewels: {total} holder(s) across {len(report.results)} primitives"
+          + (f"; {reachable} reachable from {args.from_}" if args.from_ else ""),
+          file=sys.stderr)
+    if args.report:
+        with open(args.report, "w") as f:
+            f.write(render_crownjewels_report(report))
+        print(f"  report -> {args.report}", file=sys.stderr)
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(crownjewels_to_json(report), f, indent=2)
+        print(f"  json   -> {args.json}", file=sys.stderr)
+    if not args.report and not args.json:
+        print(render_crownjewels_report(report))
+    return 0
+
+
 def _with_suffix(path: str, suffix: str) -> str:
     """Insert `-suffix` before the extension when analysing multiple domains."""
     if not suffix:
@@ -484,6 +514,19 @@ def build_parser() -> argparse.ArgumentParser:
     wct.add_argument("--work", help="work/cache directory (default: .sesurface-cache next to the image)")
     wct.add_argument("--no-cache", action="store_true", help="rebuild the image model even if cached")
     wct.set_defaults(func=_cmd_who_can_touch)
+
+    cj = sub.add_parser("crown-jewels",
+                        help="enumerate SELinux-disable primitives and who holds them")
+    cj.add_argument("-r", "--root", required=True,
+                    help="directory of raw partition images (system.img, vendor.img, ...)")
+    cj.add_argument("--from", dest="from_",
+                    help="attacker domain(s), comma-separated; annotate/sort holders "
+                         "by how they are reached (self/BECOMES/ATTACKS)")
+    cj.add_argument("--report", help="write the human-readable report here (.md)")
+    cj.add_argument("--json", help="write the machine-readable JSON here (.json)")
+    cj.add_argument("--work", help="work/cache directory (default: .sesurface-cache next to the image)")
+    cj.add_argument("--no-cache", action="store_true", help="rebuild the image model even if cached")
+    cj.set_defaults(func=_cmd_crown_jewels)
 
     lo = sub.add_parser("locate",
                         help="turn a reach JSON into a ghidra/jadx code worklist")

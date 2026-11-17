@@ -108,6 +108,20 @@ uv run sesurface who-can-touch -r /path/to/unpacked_image /dev/kgsl-3d0 \
 > domains, `ps -eZ` for which of them actually run, and `dmesg | grep avc` to
 > confirm by triggering access. `who-can-touch` is the static equivalent.
 
+`crown-jewels` works backward from the end goal — the primitives that disable
+SELinux (the `/sys/fs/selinux` toggles, the `security setenforce`/`load_policy`
+permissions, and the `sys_module`/`mac_admin`-class capabilities). It lists who
+holds each, and with `--from` marks which holders the attacker actually reaches:
+
+```bash
+uv run sesurface crown-jewels -r /path/to/unpacked_image --from untrusted_app \
+    --report out/jewels.md
+```
+
+See **[ESCALATION.md](ESCALATION.md)** for how to read all of this output —
+turning a reach report into an escalation judgement, and spotting what pivots to
+kernel execution.
+
 The expensive, source-independent work (reconstructing the image and assembling the
 policy) is cached on disk keyed by an image fingerprint, so re-running with a
 different `-s` domain is cheap.

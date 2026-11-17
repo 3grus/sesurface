@@ -359,7 +359,9 @@
     </details>
 
     <nav class="tabs" id="tabs">
-      <button data-tab="framework" aria-selected="true">Framework services
+      <button data-tab="worklist" aria-selected="true">Worklist
+        <span class="count" id="tc-wk"></span></button>
+      <button data-tab="framework" aria-selected="false">Framework services
         <span class="count" id="tc-fw"></span></button>
       <button data-tab="native" aria-selected="false">Native &amp; kernel
         <span class="count" id="tc-nat"></span></button>
@@ -371,7 +373,11 @@
   </header>
 
   <!-- FRAMEWORK -->
-  <section id="tab-framework">
+  <section id="tab-worklist">
+    <div id="wklist"></div>
+  </section>
+
+  <section id="tab-framework" hidden>
     <div class="toolbar">
       <label class="search">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -594,6 +600,7 @@
   const PIV = DATA.pivots || { becomes: [], attacks: [] };
   $("#tc-fw").textContent = fw.n_services;
   $("#tc-nat").textContent = DATA.native.length;
+  $("#tc-wk").textContent = (DATA.worklist || []).length;
   $("#tc-piv").textContent = PIV.becomes.length + PIV.attacks.length;
   $("#tc-surf").textContent = DATA.classes.length;
 
@@ -857,6 +864,37 @@
     }
     return card;
   }
+  function leadsLabel(p) {
+    if (p.leads) return p.leads;
+    if (p.to === "kernel") return "kernel execution";
+    if (p.kind === "becomes") return "runs as " + p.to + (p.escalates ? "" : " (lateral)");
+    return "input to " + p.to;
+  }
+  function renderWorklist() {
+    const wrap = $("#wklist"); wrap.innerHTML = "";
+    const W = DATA.worklist || [];
+    wrap.append(Object.assign(el("div", "ghelp"), { textContent:
+      "Everything the subject can act on that leads somewhere, ordered by escalation "
+      + "impact (most severe first). Each row is one lead: what it reaches, the object "
+      + "(file / socket / service / ioctl node), the code to open, and the one rule "
+      + "that removes it. Kernel-execution routes rank first." }));
+    if (!W.length) { wrap.append(Object.assign(el("div", "empty"),
+      { textContent: "No escalating pivots — the subject reaches no object that leads onward." })); return; }
+    W.forEach((p, i) => {
+      const card = pivCard(p);
+      const head = el("div");
+      head.style = "display:flex;gap:10px;align-items:center;margin-bottom:7px";
+      head.append(Object.assign(el("span"), { textContent: "#" + (i + 1),
+        style: "font-family:var(--mono);font-size:11px;color:var(--faint)" }));
+      const col = p.to === "kernel" ? "var(--exposed)" : (p.escalates ? "var(--review)" : "var(--muted)");
+      head.append(Object.assign(el("span"), { textContent: "→ " + leadsLabel(p),
+        style: "font-weight:700;color:" + col }));
+      head.append(Object.assign(el("span"), { textContent: "rank " + p.rank,
+        style: "margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint)" }));
+      card.insertBefore(head, card.firstChild);
+      wrap.append(card);
+    });
+  }
   function renderPivots() {
     const wrap = $("#pivlist"); wrap.innerHTML = "";
     const P = DATA.pivots || { becomes: [], attacks: [] };
@@ -925,7 +963,8 @@
     state.tab = tab;
     $$("#tabs button").forEach(b => b.setAttribute("aria-selected",
       String(b.dataset.tab === tab)));
-    ["framework", "native", "pivots", "surface"].forEach(t => $("#tab-" + t).hidden = t !== tab);
+    ["worklist", "framework", "native", "pivots", "surface"].forEach(t => $("#tab-" + t).hidden = t !== tab);
+    if (tab === "worklist" && !$("#wklist").children.length) renderWorklist();
     if (tab === "native" && !$("#natlist").children.length) renderNative();
     if (tab === "pivots" && !$("#pivlist").children.length) renderPivots();
     if (tab === "surface" && !$("#surftab").children.length) renderSurface();
@@ -938,6 +977,7 @@
   $("#foot").textContent = `sesurface · ${DATA.source} · ${fmt(DATA.totals.findings)} findings · `
     + `${fmt(fw.n_services)} framework services · ${fmt(txnTotal)} transactions · ${DATA.generated}`;
 
+  renderWorklist();
   renderFramework();
 })();
 </script>

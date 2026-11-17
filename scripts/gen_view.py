@@ -153,6 +153,22 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
         "attacks": [_pivot(p, "attacks") for p in report.pivots.attacks],
     }
 
+    # The worklist: every escalating pivot merged into one list, ordered by impact
+    # (rank, kernel first on ties), each tagged with where it leads. This is the
+    # "what to look at, in order" view -- files, sockets, services and ioctl nodes
+    # together, not split across tabs.
+    def _leads(d):
+        if d["to"] == "kernel":
+            return "kernel execution"
+        if d["kind"] == "becomes":
+            return f"runs as {d['to']}" + ("" if d["escalates"] else " (lateral)")
+        return f"input to {d['to']}"
+
+    worklist = sorted(pivots["becomes"] + pivots["attacks"],
+                      key=lambda d: (d["rank"], 0 if d["to"] == "kernel" else 1, d["to"]))
+    for d in worklist:
+        d["leads"] = _leads(d)
+
     return {
         "source": source,
         "generated": datetime.date.today().isoformat(),
@@ -165,6 +181,7 @@ def build_view(root: str, work: str, source: str, use_cache: bool = True) -> dic
                       "n_services": len(services)},
         "native": native,
         "pivots": pivots,
+        "worklist": worklist,
     }
 
 

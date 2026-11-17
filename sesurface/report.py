@@ -384,3 +384,85 @@ def _reverse_toucher_lines(t) -> list[str]:
         out.append(f"    {_GATE_LABEL[g]} {_DEC[v.decision]} : {v.evidence}")
     out.append("")
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Crown-jewels preset rendering
+# --------------------------------------------------------------------------- #
+
+_REACH_MARK = {"self": "◆ self", "BECOMES": "● BECOMES", "ATTACKS": "◎ ATTACKS", "": "·"}
+
+
+def crownjewels_to_json(report) -> dict[str, Any]:
+    return {
+        "schema": "sesurface/crown-jewels/1",
+        "attacker": list(report.attacker),
+        "jewels": [
+            {
+                "name": r.jewel.name,
+                "kind": r.jewel.kind,
+                "rationale": r.jewel.rationale,
+                "resolved": r.resolved,
+                "note": r.note,
+                "holders": [
+                    {"domain": h.domain, "reach": h.reach,
+                     "gate_note": h.gate_note, "evidence": h.evidence}
+                    for h in r.holders
+                ],
+                "reachable_holders": [h.domain for h in r.holders if h.reachable],
+            }
+            for r in report.results
+        ],
+    }
+
+
+def render_crownjewels_report(report) -> str:
+    L: list[str] = []
+    L.append("# Crown jewels — routes to disabling SELinux")
+    L.append("")
+    if report.attacker:
+        L.append(f"attacker : {', '.join(report.attacker)}  "
+                 f"(holders reachable from it are marked and listed first)")
+    else:
+        L.append("attacker : none given (pass --from to intersect with a reach closure)")
+    L.append("")
+    L.append(f"Legend — reach: {_REACH_MARK['self']} (is the attacker)  "
+             f"{_REACH_MARK['BECOMES']} (no bug needed)  "
+             f"{_REACH_MARK['ATTACKS']} (a bug in it escalates)  "
+             f"{_REACH_MARK['']} (not reachable from the attacker)")
+    L.append("")
+
+    # Headline: any crown jewel reachable from the attacker?
+    if report.attacker:
+        hot = [(r.jewel.name, h.domain, h.reach)
+               for r in report.results for h in r.holders if h.reachable]
+        if hot:
+            L.append(f"**⚠ {len(hot)} reachable route(s) to a SELinux-disable primitive:**")
+            for name, dom, reach in hot:
+                L.append(f"  - {dom} ({reach}) holds **{name}**")
+        else:
+            L.append("**No crown-jewel holder is reachable from the attacker** "
+                     "(the app-reachable surface does not include a direct "
+                     "SELinux-disable primitive; the realistic route is kernel RCE "
+                     "via a reachable driver — see the `reach` kernel findings).")
+        L.append("")
+
+    for r in report.results:
+        j = r.jewel
+        L.append(f"## {j.name}")
+        L.append(f"*{j.rationale}*")
+        L.append(f"resolved : {r.resolved}")
+        if r.note:
+            L.append(f"note     : {r.note}")
+        if not r.holders:
+            L.append("holders  : none in this policy.")
+            L.append("")
+            continue
+        nreach = sum(1 for h in r.holders if h.reachable)
+        L.append(f"holders  : {len(r.holders)} ({nreach} reachable from the attacker)")
+        for h in r.holders:
+            mark = _REACH_MARK[h.reach]
+            extra = f"  [{h.gate_note}]" if h.gate_note else ""
+            L.append(f"  {mark:<11} {h.domain}{extra}")
+        L.append("")
+    return "\n".join(L)

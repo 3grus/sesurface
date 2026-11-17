@@ -260,6 +260,20 @@ class Policy:
         for r in q.results():
             yield _to_allow(r)
 
+    def rules_with_perm(self, tclass: str, perms: Iterable[str]) -> Iterator[AllowRule]:
+        """Every allow rule of `tclass` granting any of `perms`, regardless of target.
+
+        The reverse `rules_allowing` query keys on a target *type*, which is right
+        for file/service/property objects. But the capability-like permissions
+        (`security setenforce`/`load_policy`, `capability sys_module`, ...) are
+        granted as `allow DOM self:<class> <perm>` -- the target is the domain
+        itself, so only the *source* matters. This yields those rules; the caller
+        expands each `source` to concrete domains (the holders of the permission).
+        """
+        q = TERuleQuery(self._p, tclass=[tclass], perms=set(perms), ruletype=["allow"])
+        for r in q.results():
+            yield _to_allow(r)
+
     # -- process transition graph --------------------------------------------- #
     def transitions_from(self, domain: str) -> Iterator[DomainTransition]:
         """Domain-transition edges out of `domain` (who it can become by exec)."""
